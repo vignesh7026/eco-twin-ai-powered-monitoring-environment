@@ -4,11 +4,19 @@ import { useState, useRef, useEffect, useCallback } from "react";
 const BENGALURU = { lat: 12.9716, lon: 77.5946 };
 const OWM_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
 
-const isLocalhost = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
-const DEFAULT_BACKEND = isLocalhost ? "http://localhost:5000" : "https://ecotwin-backend-c2mo.onrender.com";
-
-const rawApiUrl = import.meta.env.VITE_API_URL;
-const BACKEND_URL = (rawApiUrl || DEFAULT_BACKEND).replace(/\/+$/, "");
+function getBackendUrl() {
+  const envUrl = import.meta.env.VITE_API_URL;
+  if (envUrl && typeof envUrl === "string" && envUrl.trim() && !envUrl.includes("localhost")) {
+    return envUrl.trim().replace(/\/+$/, "");
+  }
+  if (typeof window !== "undefined" && window.location && window.location.hostname) {
+    const host = window.location.hostname;
+    if (host !== "localhost" && host !== "127.0.0.1") {
+      return "https://ecotwin-backend-c2mo.onrender.com";
+    }
+  }
+  return "http://localhost:5000";
+}
 
 /* ---------------------------------------------------------- */
 /* Inline icon set — no external icon library dependency      */
@@ -427,7 +435,8 @@ function Assistant() {
       setIsTyping(true);
 
       try {
-        const endpoint = `${BACKEND_URL}/api/assistant/chat`;
+        const backendUrl = getBackendUrl();
+        const endpoint = `${backendUrl}/api/assistant/chat`;
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -447,9 +456,10 @@ function Assistant() {
         ]);
         speak(replyText);
       } catch (err) {
-        console.error("Assistant connection error calling", `${BACKEND_URL}/api/assistant/chat`, ":", err);
+        const currentBackend = getBackendUrl();
+        console.error("Assistant connection error calling", `${currentBackend}/api/assistant/chat`, ":", err);
         const fallback = err.message?.includes("HTTP") || err.message?.includes("Failed to fetch")
-          ? `Could not connect to the backend (${BACKEND_URL}). Please verify your backend server deployment and VITE_API_URL settings.`
+          ? `Could not connect to the backend (${currentBackend}). Please verify your backend server deployment and VITE_API_URL settings.`
           : `Assistant notice: ${err.message || "Please try again in a moment."}`;
 
         setMessages((prev) => [
