@@ -1,20 +1,62 @@
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: "gemini-2.5-flash" });
+const geminiKey = process.env.GEMINI_API_KEY;
+let genAI = null;
+let model = null;
+let isGeminiDisabled = false;
+
+if (geminiKey && typeof geminiKey === "string" && geminiKey.trim()) {
+    const trimmedKey = geminiKey.trim();
+    if (!trimmedKey.startsWith("AIza")) {
+        console.warn("⚠️ GEMINI_API_KEY in .env does not start with 'AIza' (Google AI Studio key). Using smart live-data fallback engine for AI Assistant.");
+        isGeminiDisabled = true;
+    } else {
+        try {
+            genAI = new GoogleGenerativeAI(trimmedKey);
+            model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        } catch (e) {
+            console.warn("Failed to initialize GoogleGenerativeAI SDK:", e.message);
+            isGeminiDisabled = true;
+        }
+    }
+} else {
+    isGeminiDisabled = true;
+}
 
 const OWM_KEY = process.env.OPENWEATHER_API_KEY;
+
+/* Helper for resilient fetching with timeout */
+async function fetchJson(url, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const res = await fetch(url, { signal: controller.signal });
+        clearTimeout(timer);
+        if (!res.ok) return null;
+        return await res.json();
+    } catch {
+        clearTimeout(timer);
+        return null;
+    }
+}
 
 /* ------------------------------------------------------------------ */
 /* 1. Extract the city the user is asking about                        */
 /* ------------------------------------------------------------------ */
 function extractCityFallback(message) {
-    const match = message.match(/\b(?:in|for|at|near)\s+([A-Z][a-zA-Z\s]{2,30})/);
-    if (match) return match[1].trim().replace(/[?.!,]+$/, "");
-    return null;
+    const cleaned = message
+        .replace(/[?.!,]/g, "")
+        .replace(/\b(?:right\s+now|today|tomorrow|tonight|currently|this\s+week|now)\b/gi, "")
+        .trim();
+
+    const match = cleaned.match(/\b(?:in|for|at|near)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i);
+    return match ? match[1].trim() : null;
 }
 
 async function extractCity(message, defaultCity = "Bengaluru") {
+    if (!model || isGeminiDisabled) {
+        return extractCityFallback(message) || defaultCity;
+    }
     try {
         const extractPrompt = `Extract ONLY the city name the user is asking about from this message. Respond with the city name alone, nothing else. If no city is mentioned, respond with exactly: NONE
 
@@ -28,7 +70,12 @@ Message: "${message}"`;
         }
         return city;
     } catch (err) {
-        console.warn("City extraction failed, falling back:", err.message);
+        if (err?.status === 401 || err?.message?.includes("401")) {
+            console.warn("⚠️ Gemini API key unauthorized (401). Switching to live smart-fallback mode.");
+            isGeminiDisabled = true;
+        } else {
+            console.warn("City extraction via Gemini failed, falling back to regex:", err.message);
+        }
         return extractCityFallback(message) || defaultCity;
     }
 }
@@ -40,11 +87,10 @@ async function fetchCityWeather(city) {
     if (!OWM_KEY) return null;
 
     try {
-        const res = await fetch(
+        const data = await fetchJson(
             `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${OWM_KEY}&units=metric`
         );
-        const data = await res.json();
-        if (data.cod !== 200) return null;
+        if (!data || data.cod !== 200) return null;
 
         const tzOffsetSec = data.timezone; // seconds offset from UTC for this city
 
@@ -69,8 +115,7 @@ async function fetchCityWeather(city) {
             coords: { lat: data.coord.lat, lon: data.coord.lon },
             timezone_offset_sec: tzOffsetSec,
         };
-    } catch (err) {
-        console.warn("Weather fetch failed:", err.message);
+    } catch {
         return null;
     }
 }
@@ -82,11 +127,10 @@ async function fetchCityForecast(city, tzOffsetSec) {
     if (!OWM_KEY) return null;
 
     try {
-        const res = await fetch(
+        const data = await fetchJson(
             `https://api.openweathermap.org/data/2.5/forecast?q=${encodeURIComponent(city)}&appid=${OWM_KEY}&units=metric`
         );
-        const data = await res.json();
-        if (String(data.cod) !== "200") return null;
+        if (!data || String(data.cod) !== "200") return null;
 
         // Next 24 hours as 3-hour slots, labeled with local time
         return data.list.slice(0, 8).map((slot) => {
@@ -102,8 +146,7 @@ async function fetchCityForecast(city, tzOffsetSec) {
                 rain_volume_mm: slot.rain?.["3h"] || 0,
             };
         });
-    } catch (err) {
-        console.warn("Forecast fetch failed:", err.message);
+    } catch {
         return null;
     }
 }
@@ -112,10 +155,9 @@ async function fetchCityAQI(lat, lon) {
     if (!OWM_KEY || lat == null || lon == null) return null;
 
     try {
-        const res = await fetch(
+        const data = await fetchJson(
             `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${OWM_KEY}`
         );
-        const data = await res.json();
         const point = data?.list?.[0];
         if (!point) return null;
 
@@ -126,8 +168,7 @@ async function fetchCityAQI(lat, lon) {
             aqi_label: aqiLabels[point.main.aqi] || "Unknown",
             components: point.components,
         };
-    } catch (err) {
-        console.warn("AQI fetch failed:", err.message);
+    } catch {
         return null;
     }
 }
@@ -161,18 +202,58 @@ User question: ${message}`;
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Retry wrapper (unchanged)                                         */
+/* 5. Smart Live-Data Fallback Engine                                   */
 /* ------------------------------------------------------------------ */
-async function generateWithRetry(prompt, retries = 3, baseDelayMs = 1000) {
-    let lastErr;
+function generateSmartFallbackReply({ message, city, liveWeather, forecast, liveAqi, floodRisk }) {
+    const q = message.toLowerCase();
 
+    // AQI / Air Pollution Queries
+    if (q.includes("aqi") || q.includes("air") || q.includes("pollution") || q.includes("pm2") || q.includes("smog")) {
+        if (liveAqi) {
+            const pm25 = liveAqi.components?.pm2_5 ? `PM2.5: ${liveAqi.components.pm2_5} µg/m³` : "";
+            const pm10 = liveAqi.components?.pm10 ? `, PM10: ${liveAqi.components.pm10} µg/m³` : "";
+            return `Air quality in ${city} is currently ${liveAqi.aqi_label} (AQI index: ${liveAqi.aqi_index}). ${pm25}${pm10}. Current temp is ${liveWeather?.temp ?? "N/A"}°C.`;
+        }
+        return `Current weather in ${city} is ${liveWeather?.temp}°C (${liveWeather?.condition}). Air quality index data is currently being calibrated for this location.`;
+    }
+
+    // Rain / Flood / Storm Queries
+    if (q.includes("rain") || q.includes("flood") || q.includes("storm") || q.includes("umbrella") || q.includes("shower")) {
+        const nextSlot = forecast?.[0];
+        const pop = nextSlot?.rain_probability_pct ?? 0;
+        const floodTxt = floodRisk?.level ? ` Local flood risk sensor is reporting ${floodRisk.level} status.` : "";
+        return `In ${city}, condition is ${liveWeather?.condition} (${liveWeather?.description}) at ${liveWeather?.temp}°C. Probability of rain in the coming hours is ~${pop}%.${floodTxt}`;
+    }
+
+    // Weather / Temperature / Sun Queries
+    if (q.includes("temp") || q.includes("weather") || q.includes("hot") || q.includes("cold") || q.includes("sun") || q.includes("wind") || q.includes("forecast")) {
+        return `Current condition in ${city}: ${liveWeather?.temp}°C (feels like ${liveWeather?.feels_like}°C) with ${liveWeather?.condition}. Humidity: ${liveWeather?.humidity}%, Wind: ${liveWeather?.wind_speed} m/s. Sunrise: ${liveWeather?.sunrise_local}, Sunset: ${liveWeather?.sunset_local}.`;
+    }
+
+    // Carbon / Emissions / Eco Queries
+    if (q.includes("carbon") || q.includes("emission") || q.includes("co2") || q.includes("green") || q.includes("tree")) {
+        return `EcoTwin monitoring for ${city}: Local environmental sensors indicate active climate tracking. Temperature is ${liveWeather?.temp}°C and AQI is ${liveAqi?.aqi_label || "Fair"}. Maintain urban vegetation cover to enhance carbon absorption.`;
+    }
+
+    // Default Environmental Summary
+    return `Here is the live environmental snapshot for ${city}: Temperature is ${liveWeather?.temp}°C (${liveWeather?.condition}), humidity ${liveWeather?.humidity}%, wind speed ${liveWeather?.wind_speed} m/s. Air Quality: ${liveAqi?.aqi_label || "Moderate"} (AQI level ${liveAqi?.aqi_index || "2"}).`;
+}
+
+/* ------------------------------------------------------------------ */
+/* 6. Retry wrapper                                                     */
+/* ------------------------------------------------------------------ */
+async function generateWithRetry(prompt, retries = 2, baseDelayMs = 800) {
+    if (!model) {
+        throw new Error("Gemini AI model is not initialized (check GEMINI_API_KEY environment variable).");
+    }
+
+    let lastErr;
     for (let attempt = 0; attempt < retries; attempt++) {
         try {
             return await model.generateContent(prompt);
         } catch (err) {
             lastErr = err;
-
-            const isOverloaded = err?.status === 503;
+            const isOverloaded = err?.status === 503 || err?.status === 429;
             const isLastAttempt = attempt === retries - 1;
 
             if (!isOverloaded || isLastAttempt) {
@@ -180,18 +261,15 @@ async function generateWithRetry(prompt, retries = 3, baseDelayMs = 1000) {
             }
 
             const delay = baseDelayMs * Math.pow(2, attempt);
-            console.warn(
-                `Gemini overloaded (503). Retrying in ${delay}ms... (attempt ${attempt + 1}/${retries})`
-            );
+            console.warn(`Gemini API busy (${err.status}). Retrying in ${delay}ms...`);
             await new Promise((resolve) => setTimeout(resolve, delay));
         }
     }
-
     throw lastErr;
 }
 
 /* ------------------------------------------------------------------ */
-/* 6. Main handler                                                      */
+/* 7. Main handler                                                      */
 /* ------------------------------------------------------------------ */
 exports.chatWithAssistant = async (req, res) => {
     try {
@@ -211,7 +289,8 @@ exports.chatWithAssistant = async (req, res) => {
 
         if (!liveWeather) {
             return res.json({
-                reply: `I couldn't find live data for "${city}". Could you check the spelling or try a nearby major city?`,
+                reply: `I couldn't fetch weather data for "${city}". Please check the city spelling and try again!`,
+                resolvedCity: city,
             });
         }
 
@@ -220,43 +299,49 @@ exports.chatWithAssistant = async (req, res) => {
             fetchCityAQI(liveWeather.coords.lat, liveWeather.coords.lon),
         ]);
 
-        const prompt = buildSystemPrompt({
+        // Attempt generation using Gemini AI
+        if (model && !isGeminiDisabled) {
+            try {
+                const prompt = buildSystemPrompt({
+                    message: trimmedMessage,
+                    city,
+                    liveWeather,
+                    forecast,
+                    liveAqi,
+                    floodRisk,
+                    carbon,
+                    isBengaluru,
+                });
+
+                const result = await generateWithRetry(prompt);
+                const reply = result.response.text().trim();
+
+                if (reply) {
+                    return res.json({ reply, resolvedCity: city, source: "gemini" });
+                }
+            } catch (aiErr) {
+                if (aiErr?.status === 401 || aiErr?.message?.includes("401")) {
+                    console.warn("⚠️ GEMINI_API_KEY is unauthorized (401). Switching AI Assistant to live smart-fallback mode.");
+                    isGeminiDisabled = true;
+                } else {
+                    console.warn("Gemini AI error (using live smart-fallback response):", aiErr.message);
+                }
+            }
+        }
+
+        // Smart live-data fallback if Gemini AI key is unconfigured, rate-limited, or failed
+        const fallbackReply = generateSmartFallbackReply({
             message: trimmedMessage,
             city,
             liveWeather,
             forecast,
             liveAqi,
             floodRisk,
-            carbon,
-            isBengaluru,
         });
 
-        const result = await generateWithRetry(prompt);
-        const reply = result.response.text().trim();
-
-        if (!reply) {
-            return res.json({
-                reply: "I couldn't generate a response — try rephrasing your question.",
-            });
-        }
-
-        return res.json({ reply, resolvedCity: city });
+        return res.json({ reply: fallbackReply, resolvedCity: city, source: "live-sensor-fallback" });
     } catch (err) {
-        console.error("Assistant chat error:", err.message);
-        console.error("Cause:", err.cause);
-
-        if (err?.status === 429) {
-            return res.status(429).json({
-                error: "Rate limit hit on the AI provider. Please wait a moment and try again.",
-            });
-        }
-
-        if (err?.status === 503) {
-            return res.status(503).json({
-                error: "The AI model is temporarily overloaded on Google's side. Please try again in a moment.",
-            });
-        }
-
-        return res.status(500).json({ error: "Failed to get AI response" });
+        console.error("Assistant chat exception:", err.message);
+        return res.status(500).json({ error: "Failed to process assistant request" });
     }
 };

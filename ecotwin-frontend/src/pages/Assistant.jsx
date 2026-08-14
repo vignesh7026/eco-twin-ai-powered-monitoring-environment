@@ -3,7 +3,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 
 const BENGALURU = { lat: 12.9716, lon: 77.5946 };
 const OWM_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
-const BACKEND_URL = import.meta.env.VITE_API_URL || "http://localhost:5000"; // fallback ensures it never resolves to a relative "" URL
+const rawApiUrl = import.meta.env.VITE_API_URL;
+const BACKEND_URL = rawApiUrl ? rawApiUrl.replace(/\/+$/, "") : "http://localhost:5000";
 
 /* ---------------------------------------------------------- */
 /* Inline icon set — no external icon library dependency      */
@@ -422,23 +423,31 @@ function Assistant() {
       setIsTyping(true);
 
       try {
-        const res = await fetch(`${BACKEND_URL}/api/assistant/chat`, {
+        const endpoint = `${BACKEND_URL}/api/assistant/chat`;
+        const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message: trimmed, context: dashboardContext }),
         });
 
-        if (!res.ok) throw new Error(`Request failed: ${res.status}`);
+        if (!res.ok) {
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.error || errData.message || `HTTP ${res.status}`);
+        }
 
         const data = await res.json();
+        const replyText = data.reply || "I received your query but no message was returned.";
         setMessages((prev) => [
           ...prev,
-          { type: "bot", text: data.reply, time: new Date() },
+          { type: "bot", text: replyText, time: new Date() },
         ]);
-        speak(data.reply);
+        speak(replyText);
       } catch (err) {
-        console.error("Assistant error:", err);
-        const fallback = "Sorry, I couldn't reach the AI backend just now. Please try again.";
+        console.error("Assistant connection error calling", `${BACKEND_URL}/api/assistant/chat`, ":", err);
+        const fallback = err.message?.includes("HTTP") || err.message?.includes("Failed to fetch")
+          ? `Could not connect to the backend (${BACKEND_URL}). Please verify your backend server deployment and VITE_API_URL settings.`
+          : `Assistant notice: ${err.message || "Please try again in a moment."}`;
+
         setMessages((prev) => [
           ...prev,
           { type: "bot", text: fallback, time: new Date() },

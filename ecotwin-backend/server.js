@@ -12,7 +12,14 @@ require("./logHistory"); // starts the 15-min PM2.5/weather logging cron job
 
 const app = express();
 
-app.use(cors());
+// Trust reverse proxies (Render, Vercel, Railway, Cloudflare, etc.) for express-rate-limit
+app.set("trust proxy", 1);
+
+app.use(cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"]
+}));
 app.use(express.json());
 
 const server = http.createServer(app);
@@ -37,6 +44,14 @@ app.get("/", (req, res) => {
     res.json({
         success: true,
         message: "EcoTwin Backend Running 🚀"
+    });
+});
+
+app.get("/api/health", (req, res) => {
+    res.json({
+        status: "ok",
+        service: "EcoTwin Backend",
+        timestamp: new Date().toISOString()
     });
 });
 
