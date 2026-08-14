@@ -8,6 +8,7 @@ const { Server } = require("socket.io");
 const connectDB = require("./config/db");
 
 connectDB();
+require("./logHistory"); // starts the 15-min PM2.5/weather logging cron job
 
 const app = express();
 
@@ -47,6 +48,8 @@ app.use(
     require("./routes/dashboardRoutes")
 );
 app.use("/api/alerts", require("./routes/alertRoutes"));
+app.use("/api/assistant", require("./routes/assistantRoutes"));
+app.use("/api/history", require("./routes/historyRoutes"));
 
 const PORT = process.env.PORT || 5000;
 
