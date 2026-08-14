@@ -6,18 +6,12 @@ let model = null;
 let isGeminiDisabled = false;
 
 if (geminiKey && typeof geminiKey === "string" && geminiKey.trim()) {
-    const trimmedKey = geminiKey.trim();
-    if (!trimmedKey.startsWith("AIza")) {
-        console.warn("⚠️ GEMINI_API_KEY in .env does not start with 'AIza' (Google AI Studio key). Using smart live-data fallback engine for AI Assistant.");
+    try {
+        genAI = new GoogleGenerativeAI(geminiKey.trim());
+        model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
+    } catch (e) {
+        console.warn("Failed to initialize GoogleGenerativeAI SDK:", e.message);
         isGeminiDisabled = true;
-    } else {
-        try {
-            genAI = new GoogleGenerativeAI(trimmedKey);
-            model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
-        } catch (e) {
-            console.warn("Failed to initialize GoogleGenerativeAI SDK:", e.message);
-            isGeminiDisabled = true;
-        }
     }
 } else {
     isGeminiDisabled = true;
