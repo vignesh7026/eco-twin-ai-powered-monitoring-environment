@@ -176,38 +176,61 @@ async function fetchCityAQI(lat, lon) {
 /* ------------------------------------------------------------------ */
 /* 4. Prompt builder — now includes sunrise/sunset + hourly forecast    */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* 4. Prompt builder — Multilingual (Tamil, Hindi, Malayalam, etc.)    */
+/* ------------------------------------------------------------------ */
 function buildSystemPrompt({ message, city, liveWeather, forecast, liveAqi, floodRisk, carbon, isBengaluru }) {
-    return `You are EcoTwin AI, a climate and environmental assistant that can answer ANY question about weather, air quality, and climate conditions for any city in the world — including specific-time questions like "will it rain at 4pm", "when is sunset", "what's the temperature tonight", etc.
+    return `You are EcoTwin AI, a smart, friendly, and versatile AI assistant.
 
-Answer using ONLY the live data provided below. Be concise (2-4 sentences), cite specific numbers/times with units, and clearly say a detail is unavailable rather than guessing or inventing it. If the user asks about a specific time, find the closest matching slot in the hourly forecast and say so (e.g. "closest forecast slot is 3:00 PM").
+CRITICAL MULTILINGUAL INSTRUCTIONS:
+- Automatically detect the user's language and script (e.g. Tamil, Hindi, Malayalam, Kannada, Telugu, Bengali, Marathi, English, Tanglish, Hinglish, Manglish, etc.).
+- ALWAYS respond in the EXACT SAME LANGUAGE and script (or transliteration) used by the user!
+  - User in Tamil (வணக்கம் / enna aachu) -> Reply in Tamil / Tanglish!
+  - User in Hindi (नमस्ते / aaj mausam kaisa hai) -> Reply in Hindi / Hinglish!
+  - User in Malayalam (നമസ്കാരം / innu mazha peyyuma) -> Reply in Malayalam / Manglish!
+  - User in English -> Reply in English!
 
-Resolved city: ${city}
-Current local time in ${city}: ${liveWeather?.current_local_time || "unknown"}
+CAPABILITIES:
+1. General Chat & Knowledge: Answer greetings ("Hi", "Hello", "Vanakkam", "Namaste", "Namaskaram"), general questions, sports, cooking, history, tech, and everyday conversation fluently.
+2. Weather & Environmental Data: If the user asks about weather, temperature, AQI, rain, flood risk, or climate, use the live data below to provide an accurate, concise answer (2-4 sentences).
 
-Current conditions:
-${liveWeather ? JSON.stringify(liveWeather) : "unavailable"}
+Resolved city context: ${city || "N/A"}
+Current local time: ${liveWeather?.current_local_time || "unknown"}
+Live Weather: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
+Hourly Forecast: ${forecast ? JSON.stringify(forecast) : "N/A"}
+Air Quality Index: ${liveAqi ? JSON.stringify(liveAqi) : "N/A"}
+Flood Sensors: ${isBengaluru && floodRisk ? JSON.stringify(floodRisk) : "N/A"}
+Carbon Sensors: ${isBengaluru && carbon ? JSON.stringify(carbon) : "N/A"}
 
-Sunrise (local): ${liveWeather?.sunrise_local || "unavailable"}
-Sunset (local): ${liveWeather?.sunset_local || "unavailable"}
-
-Hourly forecast (next 24h, 3-hour steps, local times):
-${forecast ? JSON.stringify(forecast) : "unavailable"}
-
-Air Quality Index: ${liveAqi ? JSON.stringify(liveAqi) : "unavailable"}
-
-Flood risk sensor data: ${isBengaluru && floodRisk ? JSON.stringify(floodRisk) : "not available — flood sensors are only deployed in Bengaluru"}
-Carbon emissions sensor data: ${isBengaluru && carbon ? JSON.stringify(carbon) : "not available — carbon sensors are only deployed in Bengaluru"}
-
-User question: ${message}`;
+User message: "${message}"`;
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Smart Live-Data Fallback Engine                                   */
+/* 5. Smart Live-Data & Multilingual Fallback Engine                   */
 /* ------------------------------------------------------------------ */
 function generateSmartFallbackReply({ message, city, liveWeather, forecast, liveAqi, floodRisk }) {
-    const q = message.toLowerCase();
+    const q = message.toLowerCase().trim();
 
-    // AQI / Air Pollution Queries
+    // Multilingual Greetings Detection
+    const isTamil = /\b(vanakkam|vanakam|வணக்கம்|nandri|நன்றி)\b/i.test(q);
+    const isHindi = /\b(namaste|namaskar|नमस्ते|नमस्कार|kaise|kaisa)\b/i.test(q);
+    const isMalayalam = /\b(namaskaram|നമസ്കാരം|sukhamano|സുഖമാണോ)\b/i.test(q);
+    const isGeneralGreeting = /^(hi|hello|hey|hola|greetings|good morning|good evening|good afternoon)$/i.test(q);
+
+    if (isTamil) {
+        return `வணக்கம்! நான் EcoTwin AI. வானிலை, காற்றுத் தரம் (AQI) மற்றும் சுற்றாடல் குறித்த தகவல்களுக்கு என்னை கேளுங்கள்!`;
+    }
+    if (isHindi) {
+        return `नमस्ते! मैं EcoTwin AI हूँ। आप मुझसे मौसम, वायु गुणवत्ता (AQI) और पर्यावरण के बारे में कुछ भी पूछ सकते हैं।`;
+    }
+    if (isMalayalam) {
+        return `നമസ്കാരം! ഞാൻ EcoTwin AI ആണ്. കാലാവസ്ഥ, വായു ഗുണനിലവാരം (AQI), പരിസ്ഥിതി വിവരങ്ങൾ എന്നിവ എന്നോട് ചോദിക്കാം!`;
+    }
+    if (isGeneralGreeting) {
+        return `Hello! I am EcoTwin AI. How can I assist you today? Ask me about weather, air quality, climate trends, or general queries in English, Tamil, Hindi, Malayalam, and more!`;
+    }
+
+    // Weather / AQI Queries
     if (q.includes("aqi") || q.includes("air") || q.includes("pollution") || q.includes("pm2") || q.includes("smog")) {
         if (liveAqi) {
             const pm25 = liveAqi.components?.pm2_5 ? `PM2.5: ${liveAqi.components.pm2_5} µg/m³` : "";
@@ -218,25 +241,23 @@ function generateSmartFallbackReply({ message, city, liveWeather, forecast, live
     }
 
     // Rain / Flood / Storm Queries
-    if (q.includes("rain") || q.includes("flood") || q.includes("storm") || q.includes("umbrella") || q.includes("shower")) {
+    if (q.includes("rain") || q.includes("flood") || q.includes("storm") || q.includes("umbrella") || q.includes("shower") || q.includes("mazha") || q.includes("barish")) {
         const nextSlot = forecast?.[0];
         const pop = nextSlot?.rain_probability_pct ?? 0;
         const floodTxt = floodRisk?.level ? ` Local flood risk sensor is reporting ${floodRisk.level} status.` : "";
         return `In ${city}, condition is ${liveWeather?.condition} (${liveWeather?.description}) at ${liveWeather?.temp}°C. Probability of rain in the coming hours is ~${pop}%.${floodTxt}`;
     }
 
-    // Weather / Temperature / Sun Queries
-    if (q.includes("temp") || q.includes("weather") || q.includes("hot") || q.includes("cold") || q.includes("sun") || q.includes("wind") || q.includes("forecast")) {
+    // Weather / Temperature Queries
+    if (q.includes("temp") || q.includes("weather") || q.includes("hot") || q.includes("cold") || q.includes("sun") || q.includes("wind") || q.includes("forecast") || q.includes("mausam")) {
         return `Current condition in ${city}: ${liveWeather?.temp}°C (feels like ${liveWeather?.feels_like}°C) with ${liveWeather?.condition}. Humidity: ${liveWeather?.humidity}%, Wind: ${liveWeather?.wind_speed} m/s. Sunrise: ${liveWeather?.sunrise_local}, Sunset: ${liveWeather?.sunset_local}.`;
     }
 
-    // Carbon / Emissions / Eco Queries
-    if (q.includes("carbon") || q.includes("emission") || q.includes("co2") || q.includes("green") || q.includes("tree")) {
-        return `EcoTwin monitoring for ${city}: Local environmental sensors indicate active climate tracking. Temperature is ${liveWeather?.temp}°C and AQI is ${liveAqi?.aqi_label || "Fair"}. Maintain urban vegetation cover to enhance carbon absorption.`;
+    if (liveWeather) {
+        return `Environmental snapshot for ${city}: Temperature is ${liveWeather.temp}°C (${liveWeather.condition}), humidity ${liveWeather.humidity}%, wind speed ${liveWeather.wind_speed} m/s. Air Quality: ${liveAqi?.aqi_label || "Fair"}.`;
     }
 
-    // Default Environmental Summary
-    return `Here is the live environmental snapshot for ${city}: Temperature is ${liveWeather?.temp}°C (${liveWeather?.condition}), humidity ${liveWeather?.humidity}%, wind speed ${liveWeather?.wind_speed} m/s. Air Quality: ${liveAqi?.aqi_label || "Moderate"} (AQI level ${liveAqi?.aqi_index || "2"}).`;
+    return `Hello! I am EcoTwin AI. You can ask me questions in Tamil, Hindi, Malayalam, or English about weather, air quality, carbon trends, or general topics!`;
 }
 
 /* ------------------------------------------------------------------ */
@@ -282,29 +303,28 @@ exports.chatWithAssistant = async (req, res) => {
         const trimmedMessage = message.trim();
         const { floodRisk, carbon } = context || {};
 
+        // Extract city if query contains a location or weather terms
         const city = await extractCity(trimmedMessage, context?.defaultCity || "Bengaluru");
-        const isBengaluru = city.toLowerCase().includes("bengaluru") || city.toLowerCase().includes("bangalore");
+        const isBengaluru = city ? (city.toLowerCase().includes("bengaluru") || city.toLowerCase().includes("bangalore")) : false;
 
-        const liveWeather = await fetchCityWeather(city);
+        // Fetch live weather data for city
+        const liveWeather = city ? await fetchCityWeather(city) : null;
+        let forecast = null;
+        let liveAqi = null;
 
-        if (!liveWeather) {
-            return res.json({
-                reply: `I couldn't fetch weather data for "${city}". Please check the city spelling and try again!`,
-                resolvedCity: city,
-            });
+        if (liveWeather) {
+            [forecast, liveAqi] = await Promise.all([
+                fetchCityForecast(city, liveWeather.timezone_offset_sec),
+                fetchCityAQI(liveWeather.coords.lat, liveWeather.coords.lon),
+            ]);
         }
 
-        const [forecast, liveAqi] = await Promise.all([
-            fetchCityForecast(city, liveWeather.timezone_offset_sec),
-            fetchCityAQI(liveWeather.coords.lat, liveWeather.coords.lon),
-        ]);
-
-        // Attempt generation using Gemini AI
+        // Attempt response generation using Gemini AI (Supports Tamil, Hindi, Malayalam, English, etc.)
         if (model && !isGeminiDisabled) {
             try {
                 const prompt = buildSystemPrompt({
                     message: trimmedMessage,
-                    city,
+                    city: city || "Bengaluru",
                     liveWeather,
                     forecast,
                     liveAqi,
@@ -329,10 +349,10 @@ exports.chatWithAssistant = async (req, res) => {
             }
         }
 
-        // Smart live-data fallback if Gemini AI key is unconfigured, rate-limited, or failed
+        // Multilingual Smart Fallback if Gemini is unconfigured or rate-limited
         const fallbackReply = generateSmartFallbackReply({
             message: trimmedMessage,
-            city,
+            city: city || "Bengaluru",
             liveWeather,
             forecast,
             liveAqi,
