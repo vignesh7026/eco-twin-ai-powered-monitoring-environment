@@ -3,8 +3,12 @@ import { useState, useRef, useEffect, useCallback } from "react";
 
 const BENGALURU = { lat: 12.9716, lon: 77.5946 };
 const OWM_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
+
+const isLocalhost = typeof window !== "undefined" && (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1");
+const DEFAULT_BACKEND = isLocalhost ? "http://localhost:5000" : "https://ecotwin-backend-c2mo.onrender.com";
+
 const rawApiUrl = import.meta.env.VITE_API_URL;
-const BACKEND_URL = rawApiUrl ? rawApiUrl.replace(/\/+$/, "") : "http://localhost:5000";
+const BACKEND_URL = (rawApiUrl || DEFAULT_BACKEND).replace(/\/+$/, "");
 
 /* ---------------------------------------------------------- */
 /* Inline icon set — no external icon library dependency      */
