@@ -1,4 +1,6 @@
 {
+  "buildCommand": "cd ecotwin-frontend && npm install && npm run build",
+  "outputDirectory": "ecotwin-frontend/dist",
   "rewrites": [
     {
       "source": "/(.*)",
