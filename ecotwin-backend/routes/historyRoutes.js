@@ -21,10 +21,13 @@ const READINGS_PER_DAY = 96; // at 15-min interval
 router.get("/log-now", async (req, res) => {
   try {
     await fetchAndLog();
-    const count = await Reading.countDocuments();
-    res.json({ success: true, totalReadings: count });
+    // Minimal plain-text response — cron-job.org only needs to see this
+    // request succeeded, not the actual reading count. Keeping the
+    // response tiny sidesteps any response-size/format quirk on their end.
+    res.status(200).type("text/plain").send("OK");
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error("[log-now] Failed:", err.message);
+    res.status(500).type("text/plain").send("FAILED");
   }
 });
 
