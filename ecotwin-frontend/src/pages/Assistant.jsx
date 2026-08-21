@@ -19,6 +19,57 @@ function getBackendUrl() {
 }
 
 /* ---------------------------------------------------------- */
+/* Language detection from Unicode script ranges               */
+/* ---------------------------------------------------------- */
+function detectLangFromText(text) {
+  if (/[\u0B80-\u0BFF]/.test(text)) return "ta-IN";   // Tamil
+  if (/[\u0D00-\u0D7F]/.test(text)) return "ml-IN";   // Malayalam
+  if (/[\u0900-\u097F]/.test(text)) return "hi-IN";   // Devanagari (Hindi/Marathi)
+  if (/[\u0C80-\u0CFF]/.test(text)) return "kn-IN";   // Kannada
+  if (/[\u0C00-\u0C7F]/.test(text)) return "te-IN";   // Telugu
+  if (/[\u0980-\u09FF]/.test(text)) return "bn-IN";   // Bengali
+  return "en-IN";
+}
+
+/* ---------------------------------------------------------- */
+/* Split text into sentence chunks for natural TTS             */
+/* ---------------------------------------------------------- */
+function splitSentences(text) {
+  // Split on sentence-ending punctuation; preserve chunk with its punctuation
+  const chunks = text.match(/[^।.!?\n]+[।.!?\n]?/g) || [text];
+  return chunks.map((c) => c.trim()).filter(Boolean);
+}
+
+/* ---------------------------------------------------------- */
+/* Pick the best available TTS voice for the given BCP-47 lang */
+/* ---------------------------------------------------------- */
+function pickBestVoice(voices, lang) {
+  if (!voices || voices.length === 0) return null;
+
+  const langPrimary = lang.split("-")[0]; // e.g. "ta" from "ta-IN"
+
+  // Priority 1 — Google/Microsoft neural voice exact language match
+  const neural = voices.find(
+    (v) =>
+      (v.name.includes("Google") || v.name.includes("Microsoft")) &&
+      v.lang.startsWith(langPrimary)
+  );
+  if (neural) return neural;
+
+  // Priority 2 — Any voice matching the language
+  const exact = voices.find((v) => v.lang.startsWith(langPrimary));
+  if (exact) return exact;
+
+  // Priority 3 — Indian English as graceful fallback
+  const enIN = voices.find((v) => v.lang === "en-IN");
+  if (enIN) return enIN;
+
+  // Priority 4 — Any English voice
+  const enAny = voices.find((v) => v.lang.startsWith("en"));
+  return enAny || null;
+}
+
+/* ---------------------------------------------------------- */
 /* Inline icon set — no external icon library dependency      */
 /* ---------------------------------------------------------- */
 const IconSend = ({ className = "w-4 h-4" }) => (
@@ -214,13 +265,11 @@ function useDashboardContext() {
           category: aqiJson?.list?.[0]?.main?.aqi,
         };
 
-        // TODO: replace with your real flood-risk logic (RiskMap/RiskMap3D)
         const floodRisk = {
           level: weather.rain1h > 10 ? "high" : weather.rain1h > 2 ? "moderate" : "low",
           rain1hMm: weather.rain1h,
         };
 
-        // TODO: replace with your real carbon-emissions source
         const carbon = { note: "carbon data source not yet wired" };
 
         if (!cancelled) setContext({ weather, aqi, floodRisk, carbon });
@@ -243,16 +292,14 @@ function useDashboardContext() {
 
 /* ---------------------------------------------------------- */
 /* Voice input — Web Speech API (SpeechRecognition)             */
+/* Accepts multilingual input — Gemini handles lang detection   */
 /* ---------------------------------------------------------- */
 function useSpeechRecognition({ onResult }) {
   const [isListening, setIsListening] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
   const recognitionRef = useRef(null);
-  // Synchronous source of truth — React state updates are async and can lag
-  // a frame behind, which is what causes "recognition has already started"
-  // (InvalidStateError) on a fast click or React 18 dev double-invoke.
   const activeRef = useRef(false);
-  const pendingRestartRef = useRef(false); // if stop() was called before start finished
+  const pendingRestartRef = useRef(false);
 
   useEffect(() => {
     const SpeechRecognition =
@@ -266,6 +313,8 @@ function useSpeechRecognition({ onResult }) {
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
+    // "mul" isn't widely supported; use "en-IN" as the browser hint but
+    // Gemini backend will detect the actual language from the transcript.
     recognition.lang = "en-IN";
 
     recognition.onstart = () => {
@@ -282,7 +331,6 @@ function useSpeechRecognition({ onResult }) {
     };
 
     recognition.onerror = (event) => {
-      // "aborted"/"no-speech" fire routinely on stop() or silence — not real errors
       if (event.error !== "aborted" && event.error !== "no-speech") {
         console.error("Speech recognition error:", event.error);
       }
@@ -310,23 +358,19 @@ function useSpeechRecognition({ onResult }) {
       try {
         recognition.stop();
       } catch {
-        /* already stopped — safe to ignore */
+        /* already stopped */
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const start = useCallback(() => {
-    if (!recognitionRef.current || activeRef.current) return; // already running — no-op
+    if (!recognitionRef.current || activeRef.current) return;
     try {
       recognitionRef.current.start();
-      // onstart will flip activeRef/isListening; setting here too keeps the
-      // UI responsive even if onstart fires a tick late.
       activeRef.current = true;
       setIsListening(true);
     } catch (err) {
-      // InvalidStateError: engine hadn't reported "ended" yet — ask it to
-      // restart itself as soon as the current session actually ends.
       if (err?.name === "InvalidStateError") {
         pendingRestartRef.current = true;
       } else {
@@ -341,7 +385,7 @@ function useSpeechRecognition({ onResult }) {
     try {
       recognitionRef.current.stop();
     } catch {
-      /* no-op — already stopping/stopped */
+      /* no-op */
     }
   }, []);
 
@@ -349,25 +393,80 @@ function useSpeechRecognition({ onResult }) {
 }
 
 /* ---------------------------------------------------------- */
-/* Voice output — Web Speech API (SpeechSynthesis)              */
+/* Voice output — Humanized, language-aware SpeechSynthesis    */
 /* ---------------------------------------------------------- */
 function useSpeechSynthesis() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const voicesRef = useRef([]);
   const isSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
+  // Load voices — Chrome loads them async, Firefox synchronously
+  useEffect(() => {
+    if (!isSupported) return;
+
+    const loadVoices = () => {
+      voicesRef.current = window.speechSynthesis.getVoices();
+    };
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
+  }, [isSupported]);
+
+  /**
+   * speak(text, lang) — lang is the BCP-47 code from the backend (e.g. "ta-IN")
+   * Falls back to Unicode script detection from the text itself.
+   */
   const speak = useCallback(
-    (text) => {
+    (text, lang) => {
       if (!isSupported || !voiceEnabled || !text) return;
-      window.speechSynthesis.cancel(); // stop anything currently speaking
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "en-IN";
-      utterance.rate = 1;
-      utterance.pitch = 1;
-      utterance.onstart = () => setIsSpeaking(true);
-      utterance.onend = () => setIsSpeaking(false);
-      utterance.onerror = () => setIsSpeaking(false);
-      window.speechSynthesis.speak(utterance);
+      window.speechSynthesis.cancel();
+
+      // Determine the language: backend hint → text detection → en-IN
+      const resolvedLang = lang || detectLangFromText(text) || "en-IN";
+      const bestVoice = pickBestVoice(voicesRef.current, resolvedLang);
+
+      // Split into sentence chunks — prevents browser TTS from truncating
+      // long responses and makes speech sound more natural with micro-pauses
+      const chunks = splitSentences(text);
+      let chunkIndex = 0;
+
+      const speakNextChunk = () => {
+        if (chunkIndex >= chunks.length) {
+          setIsSpeaking(false);
+          return;
+        }
+
+        const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex]);
+        utterance.lang = resolvedLang;
+
+        // Humanized voice parameters
+        utterance.rate = 0.92;   // Slightly slower = more natural, less robot
+        utterance.pitch = 1.05;  // Very slight warmth above neutral
+        utterance.volume = 1;
+
+        if (bestVoice) utterance.voice = bestVoice;
+
+        utterance.onstart = () => {
+          if (chunkIndex === 0) setIsSpeaking(true);
+        };
+        utterance.onend = () => {
+          chunkIndex++;
+          speakNextChunk();
+        };
+        utterance.onerror = () => {
+          setIsSpeaking(false);
+        };
+
+        window.speechSynthesis.speak(utterance);
+        chunkIndex++;
+      };
+
+      // Chrome has a bug where speech synthesis stops after ~15s of continuous
+      // speech. Chunking by sentences mostly avoids this, but as extra safety:
+      speakNextChunk();
     },
     [isSupported, voiceEnabled]
   );
@@ -380,7 +479,7 @@ function useSpeechSynthesis() {
 
   const toggleVoiceEnabled = useCallback(() => {
     setVoiceEnabled((prev) => {
-      if (prev) cancel(); // muting mid-speech stops it immediately
+      if (prev) cancel();
       return !prev;
     });
   }, [cancel]);
@@ -397,7 +496,7 @@ function Assistant() {
   const [messages, setMessages] = useState([
     {
       type: "bot",
-      text: "Hello! I am EcoTwin AI. Ask me about AQI, weather, flood risk, carbon emissions, or climate trends.",
+      text: "Hello! I am EcoTwin AI. Ask me about AQI, weather, flood risk, carbon emissions, or climate trends. You can speak in Tamil, Hindi, Malayalam, or English!",
       time: new Date(),
     },
   ]);
@@ -450,11 +549,15 @@ function Assistant() {
 
         const data = await res.json();
         const replyText = data.reply || "I received your query but no message was returned.";
+        // Backend provides detectedLang (e.g. "ta-IN"), fallback to text detection
+        const replyLang = data.detectedLang || detectLangFromText(replyText);
+
         setMessages((prev) => [
           ...prev,
           { type: "bot", text: replyText, time: new Date() },
         ]);
-        speak(replyText);
+        // Pass language so TTS speaks in the right voice
+        speak(replyText, replyLang);
       } catch (err) {
         const currentBackend = getBackendUrl();
         console.error("Assistant connection error calling", `${currentBackend}/api/assistant/chat`, ":", err);
@@ -466,7 +569,7 @@ function Assistant() {
           ...prev,
           { type: "bot", text: fallback, time: new Date() },
         ]);
-        speak(fallback);
+        speak(fallback, "en-IN");
       } finally {
         setIsTyping(false);
       }
@@ -487,7 +590,7 @@ function Assistant() {
     if (isListening) {
       stopListening();
     } else {
-      cancelSpeech(); // don't let the bot talk over the mic
+      cancelSpeech();
       startListening();
     }
   };
@@ -584,7 +687,7 @@ function Assistant() {
 
               <input
                 type="text"
-                placeholder={isListening ? "Listening..." : "Ask EcoTwin AI..."}
+                placeholder={isListening ? "Listening..." : "Ask EcoTwin AI in any language..."}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
