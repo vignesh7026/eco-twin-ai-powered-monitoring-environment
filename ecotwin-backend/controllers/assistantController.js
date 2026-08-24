@@ -56,7 +56,8 @@ function isWeatherQuery(message) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. City Extractor — supports "weather of salem", "weather in salem" */
+/* 2. City Extractor — supports ANY city requested by user            */
+/* e.g. "weather of salem", "climate in Madurai", "Tokyo temperature"  */
 /* ------------------------------------------------------------------ */
 function extractCityFallback(message, defaultCity = "Bengaluru") {
     if (!message || typeof message !== "string") return null;
@@ -81,7 +82,7 @@ function extractCityFallback(message, defaultCity = "Bengaluru") {
         }
     }
 
-    // 2. Keyword-stripping extraction for weather queries (e.g. "salem weather", "salem climate")
+    // 2. Keyword-stripping extraction for weather queries (e.g. "salem weather", "tokyo climate")
     if (isWeatherQuery(cleaned)) {
         const fillerWords = [
             "weather", "climate", "temperature", "temp", "aqi", "air", "quality", "pollution",
@@ -214,15 +215,15 @@ function buildSystemPrompt({ message, history, city, liveWeather, forecast, live
     return `You are EcoTwin AI, a super-intelligent, friendly, highly interactive AI assistant and chatbot.
 
 YOUR PERSONALITY & CAPABILITIES:
-1. Interactive Chatbot: You are a warm, helpful, engaging AI conversationalist. Answer ANY question asked by the user — food recommendations, cooking recipes, daily life advice, sports, technology, science, movies, general knowledge, or weather!
-2. Conversational & Natural: Speak like a knowledgeable human friend. If the user asks about the weather for a city (e.g. Salem, Bengaluru, Chennai), provide a friendly, complete weather summary using the live weather data below.
+1. Environmental & Weather Priority: Whenever the user asks about the weather, temperature, AQI, climate, or rain for ANY city (e.g. Salem, Bengaluru, Chennai, Mumbai, Delhi, Madurai, Coimbatore, Tokyo, London, Paris, New York, etc.), use the live weather data below to provide a complete, clear, and accurate environmental report for that requested city.
+2. Interactive Chatbot: Answer ANY other question asked by the user — food recommendations, cooking recipes, daily life advice, sports, technology, science, movies, general knowledge, or trivia!
 3. Multilingual Master: Detect the language used by the user (Tamil, Hindi, Malayalam, English, Tanglish, Hinglish, etc.) and respond fluently in that exact language and script.
 4. Begin reply with a language tag on line 1: [LANG:xx-XX] (e.g. [LANG:ta-IN], [LANG:hi-IN], [LANG:ml-IN], [LANG:en-IN]).
 
 RECENT CONVERSATION HISTORY:
 ${historyText}
 
-LIVE SENSOR / WEATHER CONTEXT:
+LIVE SENSOR / WEATHER CONTEXT FOR REQUESTED CITY:
 - Requested City: ${city || "None requested"}
 - Live Weather: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
 - Forecast: ${forecast ? JSON.stringify(forecast) : "N/A"}
@@ -239,22 +240,22 @@ User message: "${message}"`;
 function generateSmartFallbackReply({ message, city, liveWeather, forecast, liveAqi }) {
     const q = message.toLowerCase().trim();
 
-    // Weather & AQI Queries
-    if (q.includes("weather") || q.includes("temp") || q.includes("temperature") || q.includes("climate") || q.includes("forecast") || q.includes("salem")) {
-        const displayCity = liveWeather?.city || city || "Salem";
-        if (liveWeather) {
-            return {
-                reply: `Here is the current weather update for ${displayCity}: Temperature is ${liveWeather.temp}°C (${liveWeather.description || liveWeather.condition}), humidity is ${liveWeather.humidity}%, and wind speed is ${liveWeather.wind_speed} m/s.`,
-                detectedLang: "en-IN"
-            };
-        }
+    // Priority 1: If live weather data was fetched for ANY city requested by user
+    if (liveWeather) {
+        const displayCity = liveWeather.city || city || "Requested Location";
+        const temp = liveWeather.temp !== undefined ? `${liveWeather.temp}°C` : "N/A";
+        const cond = liveWeather.description || liveWeather.condition || "Clear";
+        const hum = liveWeather.humidity !== undefined ? `${liveWeather.humidity}%` : "N/A";
+        const wind = liveWeather.wind_speed !== undefined ? `${liveWeather.wind_speed} m/s` : "N/A";
+        const aqiText = liveAqi ? ` Air Quality: ${liveAqi.aqi_label} (AQI ${liveAqi.aqi_index}).` : "";
+
         return {
-            reply: `Fetching live weather for ${displayCity}... Current conditions are available. Ask me any more details about ${displayCity}'s temperature or climate!`,
+            reply: `Here is the current live environmental report for **${displayCity}**:\n\n• **Temperature:** ${temp} (Feels like ${liveWeather.feels_like ?? temp}°C)\n• **Condition:** ${cond}\n• **Humidity:** ${hum}\n• **Wind Speed:** ${wind}\n• **Sunrise / Sunset:** ${liveWeather.sunrise_local || "N/A"} / ${liveWeather.sunset_local || "N/A"}.${aqiText}\n\nFeel free to ask about any other city's environmental conditions or any question!`,
             detectedLang: "en-IN"
         };
     }
 
-    // Food & Eating Advice
+    // Priority 2: Food & Eating Advice
     if (q.includes("eat") || q.includes("food") || q.includes("hungry") || q.includes("snack") || q.includes("crav")) {
         return {
             reply: "Depending on your mood, great choices include hot snacks (samosas, pakoras, chai/coffee) or a nutritious meal like rice/roti with curry. What are you craving?",
@@ -262,14 +263,14 @@ function generateSmartFallbackReply({ message, city, liveWeather, forecast, live
         };
     }
 
-    // Greetings
+    // Priority 3: Greetings
     const isTamil = /\b(vanakkam|vanakam|வணக்கம்|nandri|நன்றி)\b/i.test(q);
     if (isTamil) {
-        return { reply: `வணக்கம்! நான் EcoTwin AI. உங்களுக்கு எவ்வாறு உதவ வேண்டும்? வானிலை, உணவு அல்லது எந்தக் கேள்வியும் கேளுங்கள்!`, detectedLang: "ta-IN" };
+        return { reply: `வணக்கம்! நான் EcoTwin AI. உங்களுக்கு எவ்வாறு உதவ வேண்டும்? எந்த நகரத்தின் வானிலையும் என்னை கேட்கலாம்!`, detectedLang: "ta-IN" };
     }
 
     return {
-        reply: `I am EcoTwin AI — your interactive AI assistant! Ask me about weather in any city, food ideas, tech, or general topics!`,
+        reply: `I am EcoTwin AI — your interactive AI assistant! Ask me about environmental conditions or weather in ANY city (e.g. Salem, Chennai, Madurai, Delhi, Tokyo, London), or any general question!`,
         detectedLang: "en-IN"
     };
 }
