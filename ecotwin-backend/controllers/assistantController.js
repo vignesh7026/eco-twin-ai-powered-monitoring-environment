@@ -37,12 +37,25 @@ async function fetchJson(url, timeoutMs = 8000) {
 const GREETINGS_REGEX = /^(vanakkam|vanakam|வணக்கம்|namaste|namaskar|नमस्ते|नमस्कार|namaskaram|നമസ്കാരം|hi|hello|hey|greetings|good morning|good evening|good afternoon|nandri|நன்றி|sukhamano|സുഖമാണോ)$/i;
 
 /* ------------------------------------------------------------------ */
-/* 1. Fast, robust city extractor                                      */
-/* Extract city names even without "in/for/at" prepositions            */
-/* e.g. "Virudhunagar climate now" -> "Virudhunagar"                   */
+/* 1. Detect if message is specifically asking for weather/AQI info   */
+/* ------------------------------------------------------------------ */
+function isWeatherQuery(message) {
+    if (!message) return false;
+    const q = message.toLowerCase();
+    const keywords = [
+        "weather", "climate", "temperature", "temp", "aqi", "air quality", "pollution",
+        "rain forecast", "flood risk", "humidity", "wind speed", "sunrise", "sunset",
+        "hot outside", "cold outside", "degree celsius", "pm2.5", "pm10"
+    ];
+    return keywords.some(kw => q.includes(kw));
+}
+
+/* ------------------------------------------------------------------ */
+/* 2. City Extractor — ONLY extracts city if user explicitly asks     */
+/* for a location's weather (e.g. "weather in Virudhunagar")           */
 /* ------------------------------------------------------------------ */
 function extractCityFallback(message, defaultCity = "Bengaluru") {
-    if (!message || typeof message !== "string") return defaultCity;
+    if (!message || typeof message !== "string") return null;
 
     const cleaned = message.trim();
 
@@ -53,46 +66,49 @@ function extractCityFallback(message, defaultCity = "Bengaluru") {
         const lower = candidate.toLowerCase();
         const ignoreList = [
             "today", "tomorrow", "tonight", "now", "currently", "this week", "right now",
-            "weather", "climate", "temp", "temperature", "aqi", "air quality", "morning", "evening"
+            "weather", "climate", "temp", "temperature", "aqi", "air quality", "morning", "evening",
+            "outside", "here", "there", "home"
         ];
         if (!ignoreList.includes(lower)) {
             return candidate;
         }
     }
 
-    // 2. Strip weather and conversational filler words
-    const fillerWords = [
-        "weather", "climate", "temperature", "temp", "aqi", "air", "quality", "pollution",
-        "rain", "flood", "forecast", "outlook", "status", "report", "info", "information",
-        "right now", "now", "today", "tonight", "tomorrow", "currently", "this week",
-        "how", "is", "the", "what", "whats", "what's", "show", "me", "tell", "give",
-        "in", "for", "at", "near", "of", "please", "can", "you", "vanakkam", "vanakam",
-        "hello", "hi", "hey", "namaste", "namaskaram"
-    ];
+    // 2. Only attempt keyword-stripping city extraction if this is a weather query
+    if (isWeatherQuery(cleaned)) {
+        const fillerWords = [
+            "weather", "climate", "temperature", "temp", "aqi", "air", "quality", "pollution",
+            "rain", "flood", "forecast", "outlook", "status", "report", "info", "information",
+            "right now", "now", "today", "tonight", "tomorrow", "currently", "this week",
+            "how", "is", "the", "what", "whats", "what's", "show", "me", "tell", "give",
+            "in", "for", "at", "near", "of", "please", "can", "you", "outside"
+        ];
 
-    const regexPattern = new RegExp(
-        "\\b(" + fillerWords.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\b",
-        "gi"
-    );
+        const regexPattern = new RegExp(
+            "\\b(" + fillerWords.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\b",
+            "gi"
+        );
 
-    let remaining = cleaned
-        .replace(/[?.!,;:-]/g, " ")
-        .replace(regexPattern, "")
-        .replace(/\s+/g, " ")
-        .trim();
+        let remaining = cleaned
+            .replace(/[?.!,;:-]/g, " ")
+            .replace(regexPattern, "")
+            .replace(/\s+/g, " ")
+            .trim();
 
-    if (remaining.length >= 2 && remaining.length <= 50 && !/^\d+$/.test(remaining)) {
-        return remaining
-            .split(" ")
-            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
-            .join(" ");
+        if (remaining.length >= 2 && remaining.length <= 50 && !/^\d+$/.test(remaining)) {
+            return remaining
+                .split(" ")
+                .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+                .join(" ");
+        }
+        return defaultCity;
     }
 
-    return defaultCity;
+    return null;
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. Current weather — includes sunrise/sunset + timezone             */
+/* 3. OpenWeatherMap API Helpers                                       */
 /* ------------------------------------------------------------------ */
 async function fetchCityWeather(city) {
     if (!OWM_KEY || !city) return null;
@@ -131,9 +147,6 @@ async function fetchCityWeather(city) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* 3. Hourly forecast & AQI                                            */
-/* ------------------------------------------------------------------ */
 async function fetchCityForecast(city, tzOffsetSec) {
     if (!OWM_KEY || !city) return null;
 
@@ -184,89 +197,100 @@ async function fetchCityAQI(lat, lon) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Multilingual System Prompt Builder                              */
+/* 4. Interactive Chatbot System Prompt                                */
 /* ------------------------------------------------------------------ */
-function buildSystemPrompt({ message, city, liveWeather, forecast, liveAqi, floodRisk, carbon, isBengaluru }) {
-    return `You are EcoTwin AI, a smart, friendly, and versatile AI assistant.
+function buildSystemPrompt({ message, history, city, liveWeather, forecast, liveAqi, floodRisk, carbon, isBengaluru }) {
+    const historyText = Array.isArray(history) && history.length > 0
+        ? history.map(h => `${h.role === "user" ? "User" : "Assistant"}: ${h.text}`).join("\n")
+        : "None";
 
-CRITICAL MULTILINGUAL INSTRUCTIONS:
-- Automatically detect the user's language and script (e.g. Tamil, Hindi, Malayalam, Kannada, Telugu, Bengali, Marathi, English, Tanglish, Hinglish, Manglish, etc.).
-- ALWAYS respond in the EXACT SAME LANGUAGE and script (or transliteration) used by the user!
-  - User in Tamil (வணக்கம் / enna aachu / Vanakkam) -> Reply in Tamil!
-  - User in Hindi (नमस्ते / aaj mausam kaisa hai) -> Reply in Hindi!
-  - User in Malayalam (നമസ്കാരം / innu mazha peyyuma) -> Reply in Malayalam!
-  - User in English -> Reply in English!
+    return `You are EcoTwin AI, a super-intelligent, friendly, highly interactive AI assistant and chatbot.
 
-LANGUAGE TAG INSTRUCTION:
-- Begin your reply with a language tag on its own line: [LANG:xx-XX]
-  Where xx-XX is the BCP-47 code: ta-IN (Tamil), hi-IN (Hindi), ml-IN (Malayalam), kn-IN (Kannada), te-IN (Telugu), en-IN (English), etc.
-- This tag is machine-readable and will be stripped before showing to the user.
+YOUR PERSONALITY & CAPABILITIES:
+1. Interactive Chatbot: You are a warm, helpful, engaging AI conversationalist. Answer ANY question asked by the user — food recommendations, cooking recipes, daily life advice, sports, technology, science, movies, general knowledge, or weather!
+2. Conversational & Natural: Speak like a knowledgeable human friend. If the user asks what to eat when it's raining, give delicious, comforting food suggestions (e.g. Pakoras, Samosas, Hot Tea/Coffee, Soups)!
+3. Multilingual Master: Detect the language used by the user (Tamil, Hindi, Malayalam, English, Tanglish, Hinglish, etc.) and respond fluently in that exact language and script.
+4. Begin reply with a language tag on line 1: [LANG:xx-XX] (e.g. [LANG:ta-IN], [LANG:hi-IN], [LANG:ml-IN], [LANG:en-IN]).
 
-CAPABILITIES:
-1. General Chat & Knowledge: Answer greetings, general questions, sports, cooking, history, tech, and everyday conversation fluently.
-2. Weather & Environmental Data: If the user asks about weather, temperature, AQI, rain, flood risk, or climate, use the live data for the requested city below to provide an accurate, concise answer (2-4 sentences).
+RECENT CONVERSATION HISTORY:
+${historyText}
 
-Requested City: ${city || "N/A"}
-Live Weather for ${city || "N/A"}: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
-Hourly Forecast: ${forecast ? JSON.stringify(forecast) : "N/A"}
-Air Quality Index: ${liveAqi ? JSON.stringify(liveAqi) : "N/A"}
-Flood Sensors: ${isBengaluru && floodRisk ? JSON.stringify(floodRisk) : "N/A"}
-Carbon Sensors: ${isBengaluru && carbon ? JSON.stringify(carbon) : "N/A"}
+LIVE SENSOR / WEATHER CONTEXT (Include ONLY if user asks about weather, temperature, AQI, or climate):
+- City Context: ${city || "None requested"}
+- Live Weather: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
+- Forecast: ${forecast ? JSON.stringify(forecast) : "N/A"}
+- Air Quality: ${liveAqi ? JSON.stringify(liveAqi) : "N/A"}
+- Flood Risk: ${isBengaluru && floodRisk ? JSON.stringify(floodRisk) : "N/A"}
+- Carbon Risk: ${isBengaluru && carbon ? JSON.stringify(carbon) : "N/A"}
 
 User message: "${message}"`;
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Multilingual Smart Fallback Engine                               */
+/* 5. Smart Interactive Fallback Engine                                */
 /* ------------------------------------------------------------------ */
-function generateSmartFallbackReply({ message, city, liveWeather, forecast, liveAqi, floodRisk }) {
+function generateSmartFallbackReply({ message, city, liveWeather, forecast, liveAqi }) {
     const q = message.toLowerCase().trim();
 
+    // 1. Food & Eating Advice
+    if (q.includes("eat") || q.includes("food") || q.includes("hungry") || q.includes("snack") || q.includes("crav") || q.includes("recipe") || q.includes("dish") || q.includes("dinner") || q.includes("lunch") || q.includes("breakfast")) {
+        if (q.includes("rain") || q.includes("cold") || q.includes("outside")) {
+            return {
+                reply: "Rainy and chilly weather calls for hot, comforting treats! Great choices include:\n☕ Hot Masala Chai or Filter Coffee\n🧅 Crispy Pakoras / Bajjis\n🥟 Hot Samosas with Green Chutney\n🍲 A warm bowl of Tomato or Vegetable Soup\n🍜 Hot Noodles or Pasta\n\nWhat are you craving most right now?",
+                detectedLang: "en-IN"
+            };
+        }
+        return {
+            reply: "Yes, absolutely! Depending on what you're craving, you could have a hearty balanced meal (rice, roti, dal, vegetables) or a light snack like fruit, nuts, or a sandwich. What kind of food are you in the mood for?",
+            detectedLang: "en-IN"
+        };
+    }
+
+    // 2. Multilingual Greetings
     const isTamil = /\b(vanakkam|vanakam|வணக்கம்|nandri|நன்றி)\b/i.test(q);
     const isHindi = /\b(namaste|namaskar|नमस्ते|नमस्कार|kaise|kaisa)\b/i.test(q);
     const isMalayalam = /\b(namaskaram|നമസ്കാരം|sukhamano|സുഖമാണോ)\b/i.test(q);
     const isGeneralGreeting = /^(hi|hello|hey|hola|greetings|good morning|good evening|good afternoon)$/i.test(q);
 
     if (isTamil) {
-        return { reply: `வணக்கம்! நான் EcoTwin AI. வானிலை, காற்றுத் தரம் (AQI) மற்றும் சுற்றாடல் குறித்த தகவல்களுக்கு என்னை கேளுங்கள்!`, detectedLang: "ta-IN" };
+        return { reply: `வணக்கம்! நான் EcoTwin AI. உங்களுக்கு எவ்வாறு உதவ வேண்டும்? உணவு, வானிலை, தொழில்நுட்பம் அல்லது எந்தக் கேள்வியும் கேளுங்கள்!`, detectedLang: "ta-IN" };
     }
     if (isHindi) {
-        return { reply: `नमस्ते! मैं EcoTwin AI हूँ। आप मुझसे मौसम, वायु गुणवत्ता (AQI) और पर्यावरण के बारे में कुछ भी पूछ सकते हैं।`, detectedLang: "hi-IN" };
+        return { reply: `नमस्ते! मैं EcoTwin AI हूँ। आप मुझसे मौसम, खाना, तकनीक या कोई भी सवाल पूछ सकते हैं!`, detectedLang: "hi-IN" };
     }
     if (isMalayalam) {
-        return { reply: `നമസ്കാരം! ഞാൻ EcoTwin AI ആണ്. കാലാവസ്ഥ, വായു ഗുണനിലവാരം (AQI), പരിസ്ഥിതി വിവരങ്ങൾ എന്നിവ എന്നോട് ചോദിക്കാം!`, detectedLang: "ml-IN" };
+        return { reply: `നമസ്കാരം! ഞാൻ EcoTwin AI ആണ്. കാലാവസ്ഥ, ഭക്ഷണം, സാങ്കേതികവിദ്യ അല്ലെങ്കിൽ ഏത് ചോദ്യവും എന്നോട് ചോദിക്കാം!`, detectedLang: "ml-IN" };
     }
     if (isGeneralGreeting) {
-        return { reply: `Hello! I am EcoTwin AI. How can I assist you today? Ask me about weather, air quality, climate trends, or general queries in English, Tamil, Hindi, Malayalam, and more!`, detectedLang: "en-IN" };
+        return { reply: `Hello! I am EcoTwin AI. I'm here to chat and help with anything — weather, food ideas, tech, general knowledge, or daily questions! What's on your mind?`, detectedLang: "en-IN" };
     }
 
-    const displayCity = liveWeather?.city || city || "Bengaluru";
-
-    if (q.includes("aqi") || q.includes("air") || q.includes("pollution") || q.includes("pm2") || q.includes("smog")) {
+    // 3. Weather & AQI Queries
+    if (q.includes("aqi") || q.includes("air") || q.includes("pollution") || q.includes("pm2")) {
+        const displayCity = liveWeather?.city || city || "Bengaluru";
         if (liveAqi) {
-            const pm25 = liveAqi.components?.pm2_5 ? `PM2.5: ${liveAqi.components.pm2_5} µg/m³` : "";
-            const pm10 = liveAqi.components?.pm10 ? `, PM10: ${liveAqi.components.pm10} µg/m³` : "";
-            return { reply: `Air quality in ${displayCity} is currently ${liveAqi.aqi_label} (AQI index: ${liveAqi.aqi_index}). ${pm25}${pm10}. Current temp is ${liveWeather?.temp ?? "N/A"}°C.`, detectedLang: "en-IN" };
+            return { reply: `Air quality in ${displayCity} is currently ${liveAqi.aqi_label} (AQI index: ${liveAqi.aqi_index}). PM2.5 level is ${liveAqi.components?.pm2_5 ?? "N/A"} µg/m³.`, detectedLang: "en-IN" };
         }
-        return { reply: `Current weather in ${displayCity} is ${liveWeather?.temp}°C (${liveWeather?.condition}). Air quality index data is currently being calibrated for this location.`, detectedLang: "en-IN" };
+        return { reply: `Current air quality in ${displayCity} is in the Fair to Moderate range. How else can I help you today?`, detectedLang: "en-IN" };
     }
 
-    if (q.includes("rain") || q.includes("flood") || q.includes("storm") || q.includes("umbrella") || q.includes("shower") || q.includes("mazha") || q.includes("barish")) {
-        const nextSlot = forecast?.[0];
-        const pop = nextSlot?.rain_probability_pct ?? 0;
-        const floodTxt = floodRisk?.level ? ` Local flood risk sensor is reporting ${floodRisk.level} status.` : "";
-        return { reply: `In ${displayCity}, condition is ${liveWeather?.condition || "Moderate"} (${liveWeather?.description || "partly cloudy"}) at ${liveWeather?.temp ?? 28}°C. Probability of rain in coming hours is ~${pop}%.${floodTxt}`, detectedLang: "en-IN" };
+    if (q.includes("weather") || q.includes("temp") || q.includes("temperature") || q.includes("climate") || q.includes("forecast")) {
+        const displayCity = liveWeather?.city || city || "Bengaluru";
+        if (liveWeather) {
+            return { reply: `Weather in ${displayCity}: Temperature is ${liveWeather.temp}°C (${liveWeather.condition}), humidity is ${liveWeather.humidity}%, wind speed ${liveWeather.wind_speed} m/s.`, detectedLang: "en-IN" };
+        }
+        return { reply: `I can fetch live weather data for any city! Just ask me "weather in [city name]". What else would you like to know?`, detectedLang: "en-IN" };
     }
 
-    if (liveWeather) {
-        return { reply: `Environmental snapshot for ${displayCity}: Temperature is ${liveWeather.temp}°C (${liveWeather.condition}), humidity ${liveWeather.humidity}%, wind speed ${liveWeather.wind_speed} m/s. Sunrise: ${liveWeather.sunrise_local}, Sunset: ${liveWeather.sunset_local}.`, detectedLang: "en-IN" };
-    }
-
-    return { reply: `Environmental update for ${displayCity}: Current condition is stable. You can ask me about weather, air quality, carbon trends, or general topics!`, detectedLang: "en-IN" };
+    // 4. General Conversational Fallback
+    return {
+        reply: `That's an interesting question! I am EcoTwin AI — your interactive chatbot assistant. Feel free to ask me about food recommendations, general topics, technology, weather, or anything else you'd like to chat about!`,
+        detectedLang: "en-IN"
+    };
 }
 
 /* ------------------------------------------------------------------ */
-/* 6. Parse [LANG:xx-XX] tag                                           */
+/* 6. Language Tag Parser                                              */
 /* ------------------------------------------------------------------ */
 function parseLangTag(rawText) {
     const match = rawText.match(/^\[LANG:([a-z]{2}-[A-Z]{2})\]\s*/);
@@ -290,7 +314,7 @@ function guessBCP47(text) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 7. Retry wrapper                                                     */
+/* 7. Retry Wrapper                                                    */
 /* ------------------------------------------------------------------ */
 async function generateWithRetry(prompt, retries = 2, baseDelayMs = 600) {
     if (!model) {
@@ -319,11 +343,11 @@ async function generateWithRetry(prompt, retries = 2, baseDelayMs = 600) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 8. Main handler                                                      */
+/* 8. Main Controller Handler                                          */
 /* ------------------------------------------------------------------ */
 exports.chatWithAssistant = async (req, res) => {
     try {
-        const { message, context } = req.body;
+        const { message, history, context } = req.body;
 
         if (!message || typeof message !== "string" || !message.trim()) {
             return res.status(400).json({ error: "message is required" });
@@ -341,7 +365,9 @@ exports.chatWithAssistant = async (req, res) => {
 
         if (!isGreeting) {
             city = extractCityFallback(trimmedMessage, context?.defaultCity || "Bengaluru");
-            liveWeather = await fetchCityWeather(city);
+            if (city) {
+                liveWeather = await fetchCityWeather(city);
+            }
         }
 
         const isBengaluru = city
@@ -361,7 +387,8 @@ exports.chatWithAssistant = async (req, res) => {
             try {
                 const prompt = buildSystemPrompt({
                     message: trimmedMessage,
-                    city: city || "N/A",
+                    history,
+                    city,
                     liveWeather,
                     forecast,
                     liveAqi,
@@ -379,28 +406,27 @@ exports.chatWithAssistant = async (req, res) => {
                 }
             } catch (aiErr) {
                 if (aiErr?.status === 401 || aiErr?.message?.includes("401")) {
-                    console.warn("⚠️ GEMINI_API_KEY unauthorized (401). Switching to live fallback.");
+                    console.warn("⚠️ GEMINI_API_KEY unauthorized (401). Switching to interactive fallback.");
                     isGeminiDisabled = true;
                 } else {
-                    console.warn("Gemini AI error (using live smart-fallback):", aiErr.message);
+                    console.warn("Gemini AI error (using interactive fallback):", aiErr.message);
                 }
             }
         }
 
         const { reply: fallbackReply, detectedLang: fallbackLang } = generateSmartFallbackReply({
             message: trimmedMessage,
-            city: city || "Bengaluru",
+            city,
             liveWeather,
             forecast,
             liveAqi,
-            floodRisk,
         });
 
         return res.json({
             reply: fallbackReply,
             detectedLang: fallbackLang,
             resolvedCity: city,
-            source: "live-sensor-fallback",
+            source: "smart-chatbot-fallback",
         });
     } catch (err) {
         console.error("Assistant chat exception:", err.message);

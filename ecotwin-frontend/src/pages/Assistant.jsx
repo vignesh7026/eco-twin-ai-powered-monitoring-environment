@@ -33,7 +33,6 @@ function detectLangFromText(text) {
 
 /* ---------------------------------------------------------- */
 /* Tamil Script to Phonetic Roman Transliteration             */
-/* Enables speech output when OS/Browser lacks a Tamil TTS    */
 /* ---------------------------------------------------------- */
 function transliterateTamilToRoman(text) {
   if (!text || !/[\u0B80-\u0BFF]/.test(text)) return text;
@@ -89,14 +88,12 @@ function getAudibleTextAndVoice(text, lang, voices) {
   const langPrimary = (lang || "en").split("-")[0].toLowerCase();
 
   if (voices && voices.length > 0) {
-    // 1. Look for matching voice in language (e.g. ta, hi, ml, en)
     const exactVoice = voices.find(v => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(langPrimary));
 
     if (exactVoice) {
       return { text, voice: exactVoice, lang: exactVoice.lang };
     }
 
-    // 2. Fall back to Indian English voice or any available English voice
     const enVoice = voices.find(v => v.lang && v.lang.toLowerCase().includes("en-in")) ||
                     voices.find(v => v.lang && v.lang.toLowerCase().startsWith("en")) ||
                     voices[0];
@@ -105,7 +102,6 @@ function getAudibleTextAndVoice(text, lang, voices) {
     return { text: speakableText, voice: enVoice, lang: enVoice?.lang || "en-IN" };
   }
 
-  // No voices list available yet — fall back gracefully
   const speakableText = transliterateIfNecessary(text, langPrimary);
   return { text: speakableText, voice: null, lang: "en-IN" };
 }
@@ -119,7 +115,7 @@ function splitSentences(text) {
 }
 
 /* ---------------------------------------------------------- */
-/* Inline icons                                               */
+/* Icons                                                       */
 /* ---------------------------------------------------------- */
 const IconSend = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -158,16 +154,19 @@ const IconDroplet = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
-const IconLeaf = ({ className = "w-4 h-4" }) => (
+const IconCoffee = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M5 21c8 0 14-6 14-15-9 0-15 6-15 14 0 .3 0 .7.1 1z" />
-    <path d="M5 21c2-5 5-8 9-10" />
+    <path d="M18 8h1a4 4 0 0 1 0 8h-1" />
+    <path d="M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8z" />
+    <line x1="6" y1="1" x2="6" y2="4" />
+    <line x1="10" y1="1" x2="10" y2="4" />
+    <line x1="14" y1="1" x2="14" y2="4" />
   </svg>
 );
 
-const IconCloud = ({ className = "w-4 h-4" }) => (
+const IconMessageSquare = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M17.5 19a4.5 4.5 0 000-9 6 6 0 10-11.4 2A4 4 0 007 19h10.5z" />
+    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
   </svg>
 );
 
@@ -197,10 +196,10 @@ const IconVolumeOff = ({ className = "w-4 h-4" }) => (
 );
 
 const SUGGESTIONS = [
+  { label: "What to eat when it's raining?", icon: IconCoffee },
   { label: "AQI right now", icon: IconWind },
   { label: "Flood risk today", icon: IconDroplet },
-  { label: "Carbon trends", icon: IconLeaf },
-  { label: "Weather outlook", icon: IconCloud },
+  { label: "Tell me something interesting", icon: IconMessageSquare },
 ];
 
 const formatTime = (date) =>
@@ -231,7 +230,7 @@ function MessageBubble({ msg }) {
       <Avatar isUser={isUser} />
       <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
         <div
-          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed ${
+          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-line ${
             isUser
               ? "bg-gradient-to-br from-teal-500 to-cyan-700 text-white rounded-br-md"
               : "bg-white/5 border border-white/5 text-slate-100 rounded-bl-md"
@@ -414,9 +413,6 @@ function useSpeechRecognition({ onResult }) {
   return { isListening, isSupported, start, stop };
 }
 
-/* ---------------------------------------------------------- */
-/* Reliable Speech Synthesis Hook                             */
-/* ---------------------------------------------------------- */
 function useSpeechSynthesis() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -554,7 +550,7 @@ function Assistant() {
   const [messages, setMessages] = useState([
     {
       type: "bot",
-      text: "Hello! I am EcoTwin AI. Ask me about AQI, weather, flood risk, carbon emissions, or climate trends. You can speak in Tamil, Hindi, Malayalam, or English!",
+      text: "Hello! I am EcoTwin AI — your interactive chatbot assistant. Ask me anything about food ideas, general topics, tech, sports, or weather in Tamil, Hindi, Malayalam, or English!",
       time: new Date(),
     },
   ]);
@@ -587,9 +583,16 @@ function Assistant() {
       const trimmed = text.trim();
       if (!trimmed) return;
 
-      setMessages((prev) => [...prev, { type: "user", text: trimmed, time: new Date() }]);
+      const newMessages = [...messages, { type: "user", text: trimmed, time: new Date() }];
+      setMessages(newMessages);
       setMessage("");
       setIsTyping(true);
+
+      // Extract conversation history to pass to backend
+      const history = newMessages.slice(-6).map(m => ({
+        role: m.type === "user" ? "user" : "assistant",
+        text: m.text
+      }));
 
       try {
         const backendUrl = getBackendUrl();
@@ -597,7 +600,7 @@ function Assistant() {
         const res = await fetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message: trimmed, context: dashboardContext }),
+          body: JSON.stringify({ message: trimmed, history, context: dashboardContext }),
         });
 
         if (!res.ok) {
@@ -614,7 +617,6 @@ function Assistant() {
           { type: "bot", text: replyText, time: new Date() },
         ]);
 
-        // Speak aloud
         speak(replyText, replyLang);
       } catch (err) {
         const currentBackend = getBackendUrl();
@@ -632,7 +634,7 @@ function Assistant() {
         setIsTyping(false);
       }
     },
-    [dashboardContext, speak]
+    [messages, dashboardContext, speak]
   );
 
   const handleSend = () => sendText(message);
@@ -671,7 +673,7 @@ function Assistant() {
                 <span className="absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75 animate-ping" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-400" />
               </span>
-              Live · Bengaluru sensor mesh synced
+              Interactive AI Chatbot · Online
               {isListening && <span className="text-rose-400">· Listening…</span>}
               {isSpeaking && <span className="text-teal-300">· Speaking…</span>}
             </p>
@@ -745,7 +747,7 @@ function Assistant() {
 
               <input
                 type="text"
-                placeholder={isListening ? "Listening..." : "Ask EcoTwin AI in any language..."}
+                placeholder={isListening ? "Listening..." : "Ask me anything (food, weather, tech, advice)..."}
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 onKeyDown={handleKeyDown}
