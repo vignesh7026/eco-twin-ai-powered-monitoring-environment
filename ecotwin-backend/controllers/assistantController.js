@@ -8,31 +8,28 @@ const httpsAgent = new https.Agent({ rejectUnauthorized: false });
 
 const geminiKey = process.env.GEMINI_API_KEY;
 let genAI = null;
-let model = null;
-let isGeminiDisabled = false;
 
 if (geminiKey && typeof geminiKey === "string" && geminiKey.trim()) {
     try {
         genAI = new GoogleGenerativeAI(geminiKey.trim());
-        model = genAI.getGenerativeModel({
-            model: "gemini-3.6-flash",
-            generationConfig: {
-                temperature: 0.7,
-                maxOutputTokens: 1000,
-            },
-        });
     } catch (e) {
         console.warn("Failed to initialize GoogleGenerativeAI SDK:", e.message);
-        isGeminiDisabled = true;
     }
-} else {
-    isGeminiDisabled = true;
 }
 
 const OWM_KEY = process.env.OPENWEATHER_API_KEY;
 
+/* Model Pool for automatic quota failover */
+const MODEL_POOL = [
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.7-flash",
+    "gemini-flash-latest"
+];
+
 /* Helper for resilient fetching using Axios with TLS bypass */
-async function fetchJson(url, timeoutMs = 5000) {
+async function fetchJson(url, timeoutMs = 4000) {
     try {
         const res = await axios.get(url, {
             timeout: timeoutMs,
@@ -40,7 +37,6 @@ async function fetchJson(url, timeoutMs = 5000) {
         });
         return res.data;
     } catch (err) {
-        console.warn("fetchJson notice for", url, ":", err.message);
         return null;
     }
 }
@@ -48,7 +44,7 @@ async function fetchJson(url, timeoutMs = 5000) {
 const GREETINGS_REGEX = /^(vanakkam|vanakam|வணக்கம்|namaste|namaskar|नमस्ते|नमस्कार|namaskaram|നമസ്കാരം|hi|hello|hey|greetings|good morning|good evening|good afternoon|nandri|நன்றி|sukhamano|സുഖമാണോ)$/i;
 
 /* ------------------------------------------------------------------ */
-/* 1. Detect weather query                                             */
+/* 1. Detect if message is asking for weather/AQI info                 */
 /* ------------------------------------------------------------------ */
 function isWeatherQuery(message) {
     if (!message) return false;
@@ -119,7 +115,7 @@ function extractCityFallback(message, defaultCity = "Bengaluru") {
 }
 
 /* ------------------------------------------------------------------ */
-/* 3. Fast Weather API Fetcher                                         */
+/* 3. OpenWeatherMap API Helpers                                       */
 /* ------------------------------------------------------------------ */
 async function fetchCityWeather(city) {
     if (!OWM_KEY || !city) return null;
@@ -127,7 +123,7 @@ async function fetchCityWeather(city) {
     try {
         const data = await fetchJson(
             `https://api.openweathermap.org/data/2.5/weather?q=${encodeURIComponent(city)}&appid=${OWM_KEY}&units=metric`,
-            5000
+            4000
         );
         if (!data || data.cod !== 200) return null;
 
@@ -163,7 +159,7 @@ async function fetchCityAQI(lat, lon) {
     try {
         const data = await fetchJson(
             `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${OWM_KEY}`,
-            4000
+            3000
         );
         const point = data?.list?.[0];
         if (!point) return null;
@@ -181,35 +177,67 @@ async function fetchCityAQI(lat, lon) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Optimized System Prompt (No Markdown Hashtags #)                 */
+/* 4. Multi-Model Generative AI Caller with Automatic Failover        */
+/* ------------------------------------------------------------------ */
+async function generateContentWithFailover(prompt) {
+    if (!genAI) {
+        throw new Error("Gemini AI SDK is not initialized.");
+    }
+
+    let lastError = null;
+
+    for (const modelName of MODEL_POOL) {
+        try {
+            const m = genAI.getGenerativeModel({
+                model: modelName,
+                generationConfig: {
+                    temperature: 0.7,
+                    maxOutputTokens: 1000,
+                },
+            });
+            const result = await m.generateContent(prompt);
+            const text = result.response.text().trim();
+            if (text) {
+                return text;
+            }
+        } catch (err) {
+            lastError = err;
+            console.warn(`Model ${modelName} notice: ${err.message}. Trying next available model...`);
+        }
+    }
+
+    throw lastError || new Error("All Gemini models were unavailable.");
+}
+
+/* ------------------------------------------------------------------ */
+/* 5. System Prompt Builder                                            */
 /* ------------------------------------------------------------------ */
 function buildSystemPrompt({ message, history, city, liveWeather, liveAqi }) {
     const historyText = Array.isArray(history) && history.length > 0
         ? history.slice(-4).map(h => `${h.role === "user" ? "User" : "Assistant"}: ${h.text}`).join("\n")
         : "None";
 
-    return `You are EcoTwin AI, a fast, friendly, premium AI assistant.
+    return `You are EcoTwin AI, a helpful, precise, friendly, and ultra-fast AI assistant.
 
-CRITICAL FORMATTING INSTRUCTIONS:
-1. DO NOT use markdown header hashtags (#, ##, ###, ####) anywhere in your response!
-2. Use clean bold text (e.g. **Title**) for headings, bullet points (* ), and clean paragraphs.
-3. Be fast, direct, concise, and structured.
-4. Detect user's language (Tamil, Hindi, Malayalam, English, etc.) and respond in that language.
-5. Begin line 1 with a language tag: [LANG:xx-XX] (e.g. [LANG:en-IN], [LANG:ta-IN]).
+CRITICAL INSTRUCTIONS:
+1. Answer the user's question directly, accurately, and thoroughly.
+2. DO NOT use markdown header hashtags (#, ##, ###, ####). Use bold text (e.g. **Heading**) for section titles, bullet points (* ), and clean paragraphs.
+3. Automatically detect the user's language (Tamil, Hindi, Malayalam, English, etc.) and respond in that language.
+4. Begin line 1 with a language tag: [LANG:xx-XX] (e.g. [LANG:en-IN], [LANG:ta-IN]).
 
-CONVERSATION CONTEXT:
+CONVERSATION HISTORY:
 ${historyText}
 
-LIVE WEATHER CONTEXT (Use ONLY if user asks about weather/temp/AQI):
+LIVE ENVIRONMENTAL / WEATHER CONTEXT (Use ONLY if user asks about weather/temp/AQI):
 - City: ${city || "None"}
 - Weather: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
 - Air Quality: ${liveAqi ? JSON.stringify(liveAqi) : "N/A"}
 
-User message: "${message}"`;
+USER QUESTION TO ANSWER NOW: "${message}"`;
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Fast Smart Fallback Engine                                       */
+/* 6. Smart Fallback Engine                                            */
 /* ------------------------------------------------------------------ */
 function generateSmartFallbackReply({ message, city, liveWeather, liveAqi }) {
     const q = message.toLowerCase().trim();
@@ -223,14 +251,14 @@ function generateSmartFallbackReply({ message, city, liveWeather, liveAqi }) {
         const aqiText = liveAqi ? ` Air Quality: ${liveAqi.aqi_label} (AQI ${liveAqi.aqi_index}).` : "";
 
         return {
-            reply: `Live Environmental Snapshot for **${displayCity}**:\n\n* **Temperature:** ${temp} (Feels like ${liveWeather.feels_like ?? temp}°C)\n* **Condition:** ${cond}\n* **Humidity:** ${hum}\n* **Wind Speed:** ${wind}\n* **Sunrise / Sunset:** ${liveWeather.sunrise_local || "N/A"} / ${liveWeather.sunset_local || "N/A"}.${aqiText}`,
+            reply: `Live Environmental Report for **${displayCity}**:\n\n* **Temperature:** ${temp} (Feels like ${liveWeather.feels_like ?? temp}°C)\n* **Condition:** ${cond}\n* **Humidity:** ${hum}\n* **Wind Speed:** ${wind}\n* **Sunrise / Sunset:** ${liveWeather.sunrise_local || "N/A"} / ${liveWeather.sunset_local || "N/A"}.${aqiText}`,
             detectedLang: "en-IN"
         };
     }
 
-    if (q.includes("eat") || q.includes("food") || q.includes("hungry") || q.includes("snack") || q.includes("crav")) {
+    if (q.includes("eat") || q.includes("food") || q.includes("hungry") || q.includes("snack") || q.includes("crav") || q.includes("recipe") || q.includes("bajji")) {
         return {
-            reply: "Great food options right now:\n\n* **Hot Drinks:** Masala Chai or Filter Coffee\n* **Crispy Snacks:** Samosas, Pakoras, or Bajjis\n* **Comfort Food:** Hot Vegetable Soup, Noodles, or Pasta\n\nWhat are you in the mood for?",
+            reply: "Delicious snack options:\n\n* **Hot Crispy Bajjis / Pakoras:** Made with paneer, chilli, or potato coated in seasoned besan batter.\n* **Hot Drinks:** Masala Chai, Ginger Tea, or Filter Coffee.\n* **Warm Soups:** Tomato or Vegetable Corn Soup.\n\nWould you like a specific step-by-step recipe?",
             detectedLang: "en-IN"
         };
     }
@@ -241,13 +269,13 @@ function generateSmartFallbackReply({ message, city, liveWeather, liveAqi }) {
     }
 
     return {
-        reply: `I am EcoTwin AI — your ultra-fast AI assistant. Ask me about weather in any city, food recipes, tech, or general questions!`,
+        reply: `I am EcoTwin AI — your interactive AI assistant. Ask me any question about food recipes, weather, tech, or daily advice!`,
         detectedLang: "en-IN"
     };
 }
 
 /* ------------------------------------------------------------------ */
-/* 6. Language Tag Parser                                              */
+/* 7. Language Tag Parser                                              */
 /* ------------------------------------------------------------------ */
 function parseLangTag(rawText) {
     const match = rawText.match(/^\[LANG:([a-z]{2}-[A-Z]{2})\]\s*/);
@@ -268,27 +296,6 @@ function guessBCP47(text) {
     if (/[\u0C00-\u0C7F]/.test(text)) return "te-IN";
     if (/[\u0980-\u09FF]/.test(text)) return "bn-IN";
     return "en-IN";
-}
-
-/* ------------------------------------------------------------------ */
-/* 7. Fast Retry Handler                                              */
-/* ------------------------------------------------------------------ */
-async function generateWithRetry(prompt, retries = 1, baseDelayMs = 400) {
-    if (!model) {
-        throw new Error("Gemini AI model is not initialized.");
-    }
-
-    let lastErr;
-    for (let attempt = 0; attempt <= retries; attempt++) {
-        try {
-            return await model.generateContent(prompt);
-        } catch (err) {
-            lastErr = err;
-            if (attempt === retries) throw err;
-            await new Promise((resolve) => setTimeout(resolve, baseDelayMs));
-        }
-    }
-    throw lastErr;
 }
 
 /* ------------------------------------------------------------------ */
@@ -319,7 +326,7 @@ exports.chatWithAssistant = async (req, res) => {
             }
         }
 
-        if (model && !isGeminiDisabled) {
+        if (genAI) {
             try {
                 const prompt = buildSystemPrompt({
                     message: trimmedMessage,
@@ -329,17 +336,15 @@ exports.chatWithAssistant = async (req, res) => {
                     liveAqi,
                 });
 
-                const result = await generateWithRetry(prompt);
-                const rawText = result.response.text().trim();
+                const rawText = await generateContentWithFailover(prompt);
 
                 if (rawText) {
                     const { reply, detectedLang } = parseLangTag(rawText);
-                    // Strip any stray markdown header hashes if present
                     const cleanReply = reply.replace(/^#{1,6}\s+/gm, "");
                     return res.json({ reply: cleanReply, detectedLang, resolvedCity: city, source: "gemini" });
                 }
             } catch (aiErr) {
-                console.warn("Gemini AI notice (using fast fallback):", aiErr.message);
+                console.warn("Gemini AI failover exhausted (using smart fallback):", aiErr.message);
             }
         }
 
