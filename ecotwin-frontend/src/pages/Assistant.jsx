@@ -110,8 +110,78 @@ function getAudibleTextAndVoice(text, lang, voices) {
 /* Split text into sentence chunks for natural speech         */
 /* ---------------------------------------------------------- */
 function splitSentences(text) {
-  const chunks = text.match(/[^।.!?\n]+[।.!?\n]?/g) || [text];
+  // Strip markdown symbols before speaking
+  const clean = text.replace(/#{1,6}\s+/g, "").replace(/\*\*/g, "").replace(/---/g, "");
+  const chunks = clean.match(/[^।.!?\n]+[।.!?\n]?/g) || [clean];
   return chunks.map((c) => c.trim()).filter(Boolean);
+}
+
+/* ---------------------------------------------------------- */
+/* Premium Formatting Component (No raw hashtags ### or ####)  */
+/* Renders headings, bold text, bullets, and dividers cleanly */
+/* ---------------------------------------------------------- */
+function renderBoldText(str) {
+  if (!str) return "";
+  const parts = str.split(/(\*\*.*?\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith("**") && part.endsWith("**")) {
+      return (
+        <strong key={i} className="font-semibold text-teal-200">
+          {part.slice(2, -2)}
+        </strong>
+      );
+    }
+    return part;
+  });
+}
+
+function FormattedMessageText({ text }) {
+  if (!text) return null;
+
+  const lines = text.split("\n");
+
+  return (
+    <div className="space-y-2">
+      {lines.map((line, idx) => {
+        let trimmed = line.trim();
+
+        if (!trimmed) return <div key={idx} className="h-1" />;
+
+        // Horizontal dividers
+        if (trimmed === "---" || trimmed === "***" || trimmed === "___") {
+          return <hr key={idx} className="border-t border-white/10 my-3" />;
+        }
+
+        // Markdown headings (strip #, ##, ###, ####, etc.)
+        if (/^#{1,6}\s+/.test(trimmed)) {
+          const headingText = trimmed.replace(/^#{1,6}\s+/, "").replace(/\*\*/g, "");
+          return (
+            <div key={idx} className="text-base font-bold text-teal-300 mt-3 mb-1 tracking-wide border-b border-teal-400/15 pb-1">
+              {headingText}
+            </div>
+          );
+        }
+
+        // Bullet points (* or -)
+        if (/^[\*\-]\s+/.test(trimmed)) {
+          const bulletContent = trimmed.replace(/^[\*\-]\s+/, "");
+          return (
+            <div key={idx} className="flex items-start gap-2.5 ml-1 text-slate-200">
+              <span className="text-teal-400 font-bold text-sm leading-snug">•</span>
+              <div className="flex-1 text-sm leading-relaxed">{renderBoldText(bulletContent)}</div>
+            </div>
+          );
+        }
+
+        // Regular paragraphs
+        return (
+          <p key={idx} className="text-slate-100 text-sm leading-relaxed">
+            {renderBoldText(trimmed)}
+          </p>
+        );
+      })}
+    </div>
+  );
 }
 
 /* ---------------------------------------------------------- */
@@ -211,7 +281,7 @@ function Avatar({ isUser }) {
       className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center ${
         isUser
           ? "bg-slate-700 text-slate-200"
-          : "bg-gradient-to-br from-teal-400/20 to-cyan-600/20 border border-teal-400/30 text-teal-300"
+          : "bg-gradient-to-br from-teal-400/20 to-cyan-600/20 border border-teal-400/30 text-teal-300 shadow-[0_0_15px_-3px_rgba(45,212,191,0.3)]"
       }`}
     >
       {isUser ? <IconUser /> : <IconBot />}
@@ -223,20 +293,24 @@ function MessageBubble({ msg }) {
   const isUser = msg.type === "user";
   return (
     <div
-      className={`msg-enter flex items-end gap-3 max-w-[78%] ${
+      className={`msg-enter flex items-end gap-3 max-w-[82%] ${
         isUser ? "ml-auto flex-row-reverse" : ""
       }`}
     >
       <Avatar isUser={isUser} />
       <div className={`flex flex-col ${isUser ? "items-end" : "items-start"}`}>
         <div
-          className={`px-4 py-3 rounded-2xl text-sm leading-relaxed whitespace-pre-line ${
+          className={`px-5 py-3.5 rounded-2xl ${
             isUser
-              ? "bg-gradient-to-br from-teal-500 to-cyan-700 text-white rounded-br-md"
-              : "bg-white/5 border border-white/5 text-slate-100 rounded-bl-md"
+              ? "bg-gradient-to-br from-teal-500 to-cyan-700 text-white rounded-br-md shadow-md"
+              : "bg-slate-800/60 border border-teal-400/15 text-slate-100 rounded-bl-md shadow-lg backdrop-blur-md"
           }`}
         >
-          {msg.text}
+          {isUser ? (
+            <p className="text-sm leading-relaxed text-white font-normal">{msg.text}</p>
+          ) : (
+            <FormattedMessageText text={msg.text} />
+          )}
         </div>
         <span className="mt-1 text-[10px] font-mono text-slate-500 px-1">
           {formatTime(msg.time)}
@@ -250,7 +324,7 @@ function TypingBubble() {
   return (
     <div className="msg-enter flex items-end gap-3 max-w-[78%]">
       <Avatar isUser={false} />
-      <div className="flex items-center gap-1.5 px-4 py-3.5 rounded-2xl rounded-bl-md bg-white/5 border border-white/5">
+      <div className="flex items-center gap-1.5 px-4 py-3.5 rounded-2xl rounded-bl-md bg-slate-800/60 border border-teal-400/15">
         <span className="dot w-1.5 h-1.5 rounded-full bg-teal-400" style={{ animationDelay: "0s" }} />
         <span className="dot w-1.5 h-1.5 rounded-full bg-teal-400" style={{ animationDelay: "0.15s" }} />
         <span className="dot w-1.5 h-1.5 rounded-full bg-teal-400" style={{ animationDelay: "0.3s" }} />
@@ -550,7 +624,7 @@ function Assistant() {
   const [messages, setMessages] = useState([
     {
       type: "bot",
-      text: "Hello! I am EcoTwin AI — your interactive chatbot assistant. Ask me anything about food ideas, general topics, tech, sports, or weather in Tamil, Hindi, Malayalam, or English!",
+      text: "Hello! I am EcoTwin AI — your interactive AI assistant. Ask me anything about environmental conditions in any city, food ideas, recipes, or daily questions in Tamil, Hindi, Malayalam, or English!",
       time: new Date(),
     },
   ]);
@@ -588,8 +662,7 @@ function Assistant() {
       setMessage("");
       setIsTyping(true);
 
-      // Extract conversation history to pass to backend
-      const history = newMessages.slice(-6).map(m => ({
+      const history = newMessages.slice(-4).map(m => ({
         role: m.type === "user" ? "user" : "assistant",
         text: m.text
       }));
@@ -673,7 +746,7 @@ function Assistant() {
                 <span className="absolute inline-flex h-full w-full rounded-full bg-teal-400 opacity-75 animate-ping" />
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-teal-400" />
               </span>
-              Interactive AI Chatbot · Online
+              Ultra-Fast AI Chatbot · Online
               {isListening && <span className="text-rose-400">· Listening…</span>}
               {isSpeaking && <span className="text-teal-300">· Speaking…</span>}
             </p>
