@@ -8,7 +8,6 @@ let isGeminiDisabled = false;
 if (geminiKey && typeof geminiKey === "string" && geminiKey.trim()) {
     try {
         genAI = new GoogleGenerativeAI(geminiKey.trim());
-        // Fixed: was "gemini-3.6-flash" (invalid) — now using the real fast model
         model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
     } catch (e) {
         console.warn("Failed to initialize GoogleGenerativeAI SDK:", e.message);
@@ -35,24 +34,68 @@ async function fetchJson(url, timeoutMs = 8000) {
     }
 }
 
+const GREETINGS_REGEX = /^(vanakkam|vanakam|வணக்கம்|namaste|namaskar|नमस्ते|नमस्कार|namaskaram|നമസ്കാരം|hi|hello|hey|greetings|good morning|good evening|good afternoon|nandri|நன்றி|sukhamano|സുഖമാണോ)$/i;
+
 /* ------------------------------------------------------------------ */
-/* 1. Fast regex city extractor — no Gemini call, near-instant         */
+/* 1. Fast, robust city extractor                                      */
+/* Extract city names even without "in/for/at" prepositions            */
+/* e.g. "Virudhunagar climate now" -> "Virudhunagar"                   */
 /* ------------------------------------------------------------------ */
 function extractCityFallback(message, defaultCity = "Bengaluru") {
-    const cleaned = message
-        .replace(/[?.!,]/g, "")
-        .replace(/\b(?:right\s+now|today|tomorrow|tonight|currently|this\s+week|now)\b/gi, "")
+    if (!message || typeof message !== "string") return defaultCity;
+
+    const cleaned = message.trim();
+
+    // 1. Explicit preposition match: "in/for/at/near/of <City>"
+    const prepMatch = cleaned.match(/\b(?:in|for|at|near|of)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i);
+    if (prepMatch && prepMatch[1]) {
+        const candidate = prepMatch[1].trim();
+        const lower = candidate.toLowerCase();
+        const ignoreList = [
+            "today", "tomorrow", "tonight", "now", "currently", "this week", "right now",
+            "weather", "climate", "temp", "temperature", "aqi", "air quality", "morning", "evening"
+        ];
+        if (!ignoreList.includes(lower)) {
+            return candidate;
+        }
+    }
+
+    // 2. Strip weather and conversational filler words
+    const fillerWords = [
+        "weather", "climate", "temperature", "temp", "aqi", "air", "quality", "pollution",
+        "rain", "flood", "forecast", "outlook", "status", "report", "info", "information",
+        "right now", "now", "today", "tonight", "tomorrow", "currently", "this week",
+        "how", "is", "the", "what", "whats", "what's", "show", "me", "tell", "give",
+        "in", "for", "at", "near", "of", "please", "can", "you", "vanakkam", "vanakam",
+        "hello", "hi", "hey", "namaste", "namaskaram"
+    ];
+
+    const regexPattern = new RegExp(
+        "\\b(" + fillerWords.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|") + ")\\b",
+        "gi"
+    );
+
+    let remaining = cleaned
+        .replace(/[?.!,;:-]/g, " ")
+        .replace(regexPattern, "")
+        .replace(/\s+/g, " ")
         .trim();
 
-    const match = cleaned.match(/\b(?:in|for|at|near)\s+([A-Za-z]+(?:\s+[A-Za-z]+)?)/i);
-    return match ? match[1].trim() : defaultCity;
+    if (remaining.length >= 2 && remaining.length <= 50 && !/^\d+$/.test(remaining)) {
+        return remaining
+            .split(" ")
+            .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+            .join(" ");
+    }
+
+    return defaultCity;
 }
 
 /* ------------------------------------------------------------------ */
 /* 2. Current weather — includes sunrise/sunset + timezone             */
 /* ------------------------------------------------------------------ */
 async function fetchCityWeather(city) {
-    if (!OWM_KEY) return null;
+    if (!OWM_KEY || !city) return null;
 
     try {
         const data = await fetchJson(
@@ -89,10 +132,10 @@ async function fetchCityWeather(city) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 3. Hourly/short-term forecast — for "will it rain at 4pm" etc.      */
+/* 3. Hourly forecast & AQI                                            */
 /* ------------------------------------------------------------------ */
 async function fetchCityForecast(city, tzOffsetSec) {
-    if (!OWM_KEY) return null;
+    if (!OWM_KEY || !city) return null;
 
     try {
         const data = await fetchJson(
@@ -141,7 +184,7 @@ async function fetchCityAQI(lat, lon) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 4. Prompt builder — single call handles city resolution + reply     */
+/* 4. Multilingual System Prompt Builder                              */
 /* ------------------------------------------------------------------ */
 function buildSystemPrompt({ message, city, liveWeather, forecast, liveAqi, floodRisk, carbon, isBengaluru }) {
     return `You are EcoTwin AI, a smart, friendly, and versatile AI assistant.
@@ -149,9 +192,9 @@ function buildSystemPrompt({ message, city, liveWeather, forecast, liveAqi, floo
 CRITICAL MULTILINGUAL INSTRUCTIONS:
 - Automatically detect the user's language and script (e.g. Tamil, Hindi, Malayalam, Kannada, Telugu, Bengali, Marathi, English, Tanglish, Hinglish, Manglish, etc.).
 - ALWAYS respond in the EXACT SAME LANGUAGE and script (or transliteration) used by the user!
-  - User in Tamil (வணக்கம் / enna aachu) -> Reply in Tamil / Tanglish!
-  - User in Hindi (नमस्ते / aaj mausam kaisa hai) -> Reply in Hindi / Hinglish!
-  - User in Malayalam (നമസ്കാരം / innu mazha peyyuma) -> Reply in Malayalam / Manglish!
+  - User in Tamil (வணக்கம் / enna aachu / Vanakkam) -> Reply in Tamil!
+  - User in Hindi (नमस्ते / aaj mausam kaisa hai) -> Reply in Hindi!
+  - User in Malayalam (നമസ്കാരം / innu mazha peyyuma) -> Reply in Malayalam!
   - User in English -> Reply in English!
 
 LANGUAGE TAG INSTRUCTION:
@@ -161,11 +204,10 @@ LANGUAGE TAG INSTRUCTION:
 
 CAPABILITIES:
 1. General Chat & Knowledge: Answer greetings, general questions, sports, cooking, history, tech, and everyday conversation fluently.
-2. Weather & Environmental Data: If the user asks about weather, temperature, AQI, rain, flood risk, or climate, use the live data below to provide an accurate, concise answer (2-4 sentences).
+2. Weather & Environmental Data: If the user asks about weather, temperature, AQI, rain, flood risk, or climate, use the live data for the requested city below to provide an accurate, concise answer (2-4 sentences).
 
-Resolved city context: ${city || "N/A"}
-Current local time: ${liveWeather?.current_local_time || "unknown"}
-Live Weather: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
+Requested City: ${city || "N/A"}
+Live Weather for ${city || "N/A"}: ${liveWeather ? JSON.stringify(liveWeather) : "N/A"}
 Hourly Forecast: ${forecast ? JSON.stringify(forecast) : "N/A"}
 Air Quality Index: ${liveAqi ? JSON.stringify(liveAqi) : "N/A"}
 Flood Sensors: ${isBengaluru && floodRisk ? JSON.stringify(floodRisk) : "N/A"}
@@ -175,7 +217,7 @@ User message: "${message}"`;
 }
 
 /* ------------------------------------------------------------------ */
-/* 5. Smart Live-Data & Multilingual Fallback Engine                   */
+/* 5. Multilingual Smart Fallback Engine                               */
 /* ------------------------------------------------------------------ */
 function generateSmartFallbackReply({ message, city, liveWeather, forecast, liveAqi, floodRisk }) {
     const q = message.toLowerCase().trim();
@@ -198,35 +240,33 @@ function generateSmartFallbackReply({ message, city, liveWeather, forecast, live
         return { reply: `Hello! I am EcoTwin AI. How can I assist you today? Ask me about weather, air quality, climate trends, or general queries in English, Tamil, Hindi, Malayalam, and more!`, detectedLang: "en-IN" };
     }
 
+    const displayCity = liveWeather?.city || city || "Bengaluru";
+
     if (q.includes("aqi") || q.includes("air") || q.includes("pollution") || q.includes("pm2") || q.includes("smog")) {
         if (liveAqi) {
             const pm25 = liveAqi.components?.pm2_5 ? `PM2.5: ${liveAqi.components.pm2_5} µg/m³` : "";
             const pm10 = liveAqi.components?.pm10 ? `, PM10: ${liveAqi.components.pm10} µg/m³` : "";
-            return { reply: `Air quality in ${city} is currently ${liveAqi.aqi_label} (AQI index: ${liveAqi.aqi_index}). ${pm25}${pm10}. Current temp is ${liveWeather?.temp ?? "N/A"}°C.`, detectedLang: "en-IN" };
+            return { reply: `Air quality in ${displayCity} is currently ${liveAqi.aqi_label} (AQI index: ${liveAqi.aqi_index}). ${pm25}${pm10}. Current temp is ${liveWeather?.temp ?? "N/A"}°C.`, detectedLang: "en-IN" };
         }
-        return { reply: `Current weather in ${city} is ${liveWeather?.temp}°C (${liveWeather?.condition}). Air quality index data is currently being calibrated for this location.`, detectedLang: "en-IN" };
+        return { reply: `Current weather in ${displayCity} is ${liveWeather?.temp}°C (${liveWeather?.condition}). Air quality index data is currently being calibrated for this location.`, detectedLang: "en-IN" };
     }
 
     if (q.includes("rain") || q.includes("flood") || q.includes("storm") || q.includes("umbrella") || q.includes("shower") || q.includes("mazha") || q.includes("barish")) {
         const nextSlot = forecast?.[0];
         const pop = nextSlot?.rain_probability_pct ?? 0;
         const floodTxt = floodRisk?.level ? ` Local flood risk sensor is reporting ${floodRisk.level} status.` : "";
-        return { reply: `In ${city}, condition is ${liveWeather?.condition} (${liveWeather?.description}) at ${liveWeather?.temp}°C. Probability of rain in the coming hours is ~${pop}%.${floodTxt}`, detectedLang: "en-IN" };
-    }
-
-    if (q.includes("temp") || q.includes("weather") || q.includes("hot") || q.includes("cold") || q.includes("sun") || q.includes("wind") || q.includes("forecast") || q.includes("mausam")) {
-        return { reply: `Current condition in ${city}: ${liveWeather?.temp}°C (feels like ${liveWeather?.feels_like}°C) with ${liveWeather?.condition}. Humidity: ${liveWeather?.humidity}%, Wind: ${liveWeather?.wind_speed} m/s. Sunrise: ${liveWeather?.sunrise_local}, Sunset: ${liveWeather?.sunset_local}.`, detectedLang: "en-IN" };
+        return { reply: `In ${displayCity}, condition is ${liveWeather?.condition || "Moderate"} (${liveWeather?.description || "partly cloudy"}) at ${liveWeather?.temp ?? 28}°C. Probability of rain in coming hours is ~${pop}%.${floodTxt}`, detectedLang: "en-IN" };
     }
 
     if (liveWeather) {
-        return { reply: `Environmental snapshot for ${city}: Temperature is ${liveWeather.temp}°C (${liveWeather.condition}), humidity ${liveWeather.humidity}%, wind speed ${liveWeather.wind_speed} m/s. Air Quality: ${liveAqi?.aqi_label || "Fair"}.`, detectedLang: "en-IN" };
+        return { reply: `Environmental snapshot for ${displayCity}: Temperature is ${liveWeather.temp}°C (${liveWeather.condition}), humidity ${liveWeather.humidity}%, wind speed ${liveWeather.wind_speed} m/s. Sunrise: ${liveWeather.sunrise_local}, Sunset: ${liveWeather.sunset_local}.`, detectedLang: "en-IN" };
     }
 
-    return { reply: `Hello! I am EcoTwin AI. You can ask me questions in Tamil, Hindi, Malayalam, or English about weather, air quality, carbon trends, or general topics!`, detectedLang: "en-IN" };
+    return { reply: `Environmental update for ${displayCity}: Current condition is stable. You can ask me about weather, air quality, carbon trends, or general topics!`, detectedLang: "en-IN" };
 }
 
 /* ------------------------------------------------------------------ */
-/* 6. Parse the [LANG:xx-XX] tag Gemini prefixes on its reply          */
+/* 6. Parse [LANG:xx-XX] tag                                           */
 /* ------------------------------------------------------------------ */
 function parseLangTag(rawText) {
     const match = rawText.match(/^\[LANG:([a-z]{2}-[A-Z]{2})\]\s*/);
@@ -236,14 +276,13 @@ function parseLangTag(rawText) {
             reply: rawText.slice(match[0].length).trim(),
         };
     }
-    // No tag — guess from script
     return { detectedLang: guessBCP47(rawText), reply: rawText.trim() };
 }
 
 function guessBCP47(text) {
     if (/[\u0B80-\u0BFF]/.test(text)) return "ta-IN";      // Tamil
     if (/[\u0D00-\u0D7F]/.test(text)) return "ml-IN";      // Malayalam
-    if (/[\u0900-\u097F]/.test(text)) return "hi-IN";      // Devanagari (Hindi/Marathi)
+    if (/[\u0900-\u097F]/.test(text)) return "hi-IN";      // Hindi
     if (/[\u0C80-\u0CFF]/.test(text)) return "kn-IN";      // Kannada
     if (/[\u0C00-\u0C7F]/.test(text)) return "te-IN";      // Telugu
     if (/[\u0980-\u09FF]/.test(text)) return "bn-IN";      // Bengali
@@ -255,7 +294,7 @@ function guessBCP47(text) {
 /* ------------------------------------------------------------------ */
 async function generateWithRetry(prompt, retries = 2, baseDelayMs = 600) {
     if (!model) {
-        throw new Error("Gemini AI model is not initialized (check GEMINI_API_KEY environment variable).");
+        throw new Error("Gemini AI model is not initialized.");
     }
 
     let lastErr;
@@ -280,7 +319,7 @@ async function generateWithRetry(prompt, retries = 2, baseDelayMs = 600) {
 }
 
 /* ------------------------------------------------------------------ */
-/* 8. Main handler — parallel Gemini + weather fetch for speed         */
+/* 8. Main handler                                                      */
 /* ------------------------------------------------------------------ */
 exports.chatWithAssistant = async (req, res) => {
     try {
@@ -293,82 +332,61 @@ exports.chatWithAssistant = async (req, res) => {
         const trimmedMessage = message.trim();
         const { floodRisk, carbon } = context || {};
 
-        // Fast synchronous city extraction (no Gemini round-trip)
-        const city = extractCityFallback(trimmedMessage, context?.defaultCity || "Bengaluru");
+        const isGreeting = GREETINGS_REGEX.test(trimmedMessage.toLowerCase());
+
+        let city = null;
+        let liveWeather = null;
+        let forecast = null;
+        let liveAqi = null;
+
+        if (!isGreeting) {
+            city = extractCityFallback(trimmedMessage, context?.defaultCity || "Bengaluru");
+            liveWeather = await fetchCityWeather(city);
+        }
+
         const isBengaluru = city
             ? city.toLowerCase().includes("bengaluru") || city.toLowerCase().includes("bangalore")
             : false;
 
-        // -----------------------------------------------------------------
-        // PARALLEL: start Gemini AI AND weather fetches simultaneously
-        // Net latency = max(Gemini, weather) instead of their sum
-        // -----------------------------------------------------------------
-
-        const weatherPromise = fetchCityWeather(city);
-
-        // Kick off Gemini immediately with a lightweight context placeholder;
-        // we'll build the full prompt below after weather resolves — but we
-        // start the weather fetch NOW so both run in parallel.
-        let geminiPromise = null;
-
-        if (model && !isGeminiDisabled) {
-            // We need weather data inside the prompt, so we await them together
-            // but both kicks off at the same time (Promise.allSettled is concurrent).
-            geminiPromise = "pending"; // marker — real promise set below
+        if (liveWeather) {
+            const [forecastRes, aqiRes] = await Promise.allSettled([
+                fetchCityForecast(city, liveWeather.timezone_offset_sec),
+                fetchCityAQI(liveWeather.coords.lat, liveWeather.coords.lon),
+            ]);
+            forecast = forecastRes.status === "fulfilled" ? forecastRes.value : null;
+            liveAqi = aqiRes.status === "fulfilled" ? aqiRes.value : null;
         }
 
-        // Await weather first (fast, ~300–600ms)
-        const liveWeather = await weatherPromise;
-
-        let forecast = null;
-        let liveAqi = null;
-
-        // Fetch forecast + AQI in parallel with Gemini call
-        const [forecastResult, aqiResult, geminiResult] = await Promise.allSettled([
-            liveWeather ? fetchCityForecast(city, liveWeather.timezone_offset_sec) : Promise.resolve(null),
-            liveWeather ? fetchCityAQI(liveWeather.coords.lat, liveWeather.coords.lon) : Promise.resolve(null),
-            // Gemini call — runs concurrently with forecast+AQI
-            (model && !isGeminiDisabled)
-                ? generateWithRetry(
-                      buildSystemPrompt({
-                          message: trimmedMessage,
-                          city: city || "Bengaluru",
-                          liveWeather,
-                          forecast: null, // forecast not yet available; Gemini handles general reply
-                          liveAqi: null,
-                          floodRisk,
-                          carbon,
-                          isBengaluru,
-                      })
-                  )
-                : Promise.resolve(null),
-        ]);
-
-        forecast = forecastResult.status === "fulfilled" ? forecastResult.value : null;
-        liveAqi = aqiResult.status === "fulfilled" ? aqiResult.value : null;
-
-        // Process Gemini result
-        if (geminiResult.status === "fulfilled" && geminiResult.value) {
+        if (model && !isGeminiDisabled) {
             try {
-                const rawText = geminiResult.value.response.text().trim();
+                const prompt = buildSystemPrompt({
+                    message: trimmedMessage,
+                    city: city || "N/A",
+                    liveWeather,
+                    forecast,
+                    liveAqi,
+                    floodRisk,
+                    carbon,
+                    isBengaluru,
+                });
+
+                const result = await generateWithRetry(prompt);
+                const rawText = result.response.text().trim();
+
                 if (rawText) {
                     const { reply, detectedLang } = parseLangTag(rawText);
                     return res.json({ reply, detectedLang, resolvedCity: city, source: "gemini" });
                 }
-            } catch (parseErr) {
-                console.warn("Gemini response parse error:", parseErr.message);
-            }
-        } else if (geminiResult.status === "rejected") {
-            const err = geminiResult.reason;
-            if (err?.status === 401 || err?.message?.includes("401")) {
-                console.warn("⚠️ GEMINI_API_KEY unauthorized (401). Switching to live smart-fallback mode.");
-                isGeminiDisabled = true;
-            } else {
-                console.warn("Gemini AI error (using live smart-fallback):", err?.message);
+            } catch (aiErr) {
+                if (aiErr?.status === 401 || aiErr?.message?.includes("401")) {
+                    console.warn("⚠️ GEMINI_API_KEY unauthorized (401). Switching to live fallback.");
+                    isGeminiDisabled = true;
+                } else {
+                    console.warn("Gemini AI error (using live smart-fallback):", aiErr.message);
+                }
             }
         }
 
-        // Multilingual Smart Fallback
         const { reply: fallbackReply, detectedLang: fallbackLang } = generateSmartFallbackReply({
             message: trimmedMessage,
             city: city || "Bengaluru",
@@ -378,7 +396,12 @@ exports.chatWithAssistant = async (req, res) => {
             floodRisk,
         });
 
-        return res.json({ reply: fallbackReply, detectedLang: fallbackLang, resolvedCity: city, source: "live-sensor-fallback" });
+        return res.json({
+            reply: fallbackReply,
+            detectedLang: fallbackLang,
+            resolvedCity: city,
+            source: "live-sensor-fallback",
+        });
     } catch (err) {
         console.error("Assistant chat exception:", err.message);
         return res.status(500).json({ error: "Failed to process assistant request" });

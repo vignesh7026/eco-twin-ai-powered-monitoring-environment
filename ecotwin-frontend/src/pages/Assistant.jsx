@@ -32,45 +32,94 @@ function detectLangFromText(text) {
 }
 
 /* ---------------------------------------------------------- */
-/* Split text into sentence chunks for natural TTS             */
+/* Tamil Script to Phonetic Roman Transliteration             */
+/* Enables speech output when OS/Browser lacks a Tamil TTS    */
+/* ---------------------------------------------------------- */
+function transliterateTamilToRoman(text) {
+  if (!text || !/[\u0B80-\u0BFF]/.test(text)) return text;
+
+  const charMap = {
+    'அ': 'a', 'ஆ': 'aa', 'இ': 'i', 'ஈ': 'ee', 'உ': 'u', 'ஊ': 'oo',
+    'எ': 'e', 'ஏ': 'ae', 'ஐ': 'ai', 'ஒ': 'o', 'ஓ': 'oh', 'ஔ': 'au', 'ஃ': 'kh',
+    'க': 'ka', 'ங': 'nga', 'ச': 'cha', 'ஞ': 'nya', 'ட': 'ta', 'ண': 'na',
+    'த': 'tha', 'ந': 'na', 'ப': 'pa', 'ம': 'ma', 'ய': 'ya', 'ர': 'ra',
+    'ல': 'la', 'வ': 'va', 'ழ': 'zha', 'ள': 'la', 'ற': 'ra', 'ன': 'na',
+    'ஜ': 'ja', 'ஷ': 'sha', 'ஸ': 'sa', 'ஹ': 'ha',
+  };
+
+  const vowelSigns = {
+    'ா': 'aa', 'ி': 'i', 'ீ': 'ee', 'ு': 'u', 'ூ': 'oo',
+    'ெ': 'e', 'ே': 'ae', 'ை': 'ai', 'ொ': 'o', 'ோ': 'oh', 'ௌ': 'au',
+    '்': ''
+  };
+
+  let result = '';
+  const len = text.length;
+
+  for (let i = 0; i < len; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (charMap[char]) {
+      let base = charMap[char];
+      if (vowelSigns[nextChar] !== undefined) {
+        base = base.slice(0, -1) + vowelSigns[nextChar];
+        i++;
+      }
+      result += base;
+    } else {
+      result += char;
+    }
+  }
+
+  return result;
+}
+
+function transliterateIfNecessary(text, langPrimary) {
+  if (langPrimary === "ta" || /[\u0B80-\u0BFF]/.test(text)) {
+    return transliterateTamilToRoman(text);
+  }
+  return text;
+}
+
+/* ---------------------------------------------------------- */
+/* Voice selection with automatic fallback to transliteration */
+/* ---------------------------------------------------------- */
+function getAudibleTextAndVoice(text, lang, voices) {
+  const langPrimary = (lang || "en").split("-")[0].toLowerCase();
+
+  if (voices && voices.length > 0) {
+    // 1. Look for matching voice in language (e.g. ta, hi, ml, en)
+    const exactVoice = voices.find(v => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(langPrimary));
+
+    if (exactVoice) {
+      return { text, voice: exactVoice, lang: exactVoice.lang };
+    }
+
+    // 2. Fall back to Indian English voice or any available English voice
+    const enVoice = voices.find(v => v.lang && v.lang.toLowerCase().includes("en-in")) ||
+                    voices.find(v => v.lang && v.lang.toLowerCase().startsWith("en")) ||
+                    voices[0];
+
+    const speakableText = transliterateIfNecessary(text, langPrimary);
+    return { text: speakableText, voice: enVoice, lang: enVoice?.lang || "en-IN" };
+  }
+
+  // No voices list available yet — fall back gracefully
+  const speakableText = transliterateIfNecessary(text, langPrimary);
+  return { text: speakableText, voice: null, lang: "en-IN" };
+}
+
+/* ---------------------------------------------------------- */
+/* Split text into sentence chunks for natural speech         */
 /* ---------------------------------------------------------- */
 function splitSentences(text) {
-  // Split on sentence-ending punctuation; preserve chunk with its punctuation
   const chunks = text.match(/[^।.!?\n]+[।.!?\n]?/g) || [text];
   return chunks.map((c) => c.trim()).filter(Boolean);
 }
 
 /* ---------------------------------------------------------- */
-/* Pick the best available TTS voice for the given BCP-47 lang */
-/* ---------------------------------------------------------- */
-function pickBestVoice(voices, lang) {
-  if (!voices || voices.length === 0) return null;
-
-  const langPrimary = lang.split("-")[0]; // e.g. "ta" from "ta-IN"
-
-  // Priority 1 — Google/Microsoft neural voice exact language match
-  const neural = voices.find(
-    (v) =>
-      (v.name.includes("Google") || v.name.includes("Microsoft")) &&
-      v.lang.startsWith(langPrimary)
-  );
-  if (neural) return neural;
-
-  // Priority 2 — Any voice matching the language
-  const exact = voices.find((v) => v.lang.startsWith(langPrimary));
-  if (exact) return exact;
-
-  // Priority 3 — Indian English as graceful fallback
-  const enIN = voices.find((v) => v.lang === "en-IN");
-  if (enIN) return enIN;
-
-  // Priority 4 — Any English voice
-  const enAny = voices.find((v) => v.lang.startsWith("en"));
-  return enAny || null;
-}
-
-/* ---------------------------------------------------------- */
-/* Inline icon set — no external icon library dependency      */
+/* Inline icons                                               */
 /* ---------------------------------------------------------- */
 const IconSend = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -131,18 +180,6 @@ const IconMic = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
-const IconMicOff = ({ className = "w-4 h-4" }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <line x1="2" y1="2" x2="22" y2="22" />
-    <path d="M9 9v2a3 3 0 004.6 2.5" />
-    <path d="M15 6.7V4a3 3 0 00-5.9-.7" />
-    <path d="M5 11a7 7 0 0010 6.3" />
-    <path d="M19 11a7 7 0 01-.7 3" />
-    <line x1="12" y1="18" x2="12" y2="22" />
-    <line x1="8" y1="22" x2="16" y2="22" />
-  </svg>
-);
-
 const IconVolume = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
@@ -159,9 +196,6 @@ const IconVolumeOff = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
-/* ---------------------------------------------------------- */
-/* Static data                                                 */
-/* ---------------------------------------------------------- */
 const SUGGESTIONS = [
   { label: "AQI right now", icon: IconWind },
   { label: "Flood risk today", icon: IconDroplet },
@@ -172,9 +206,6 @@ const SUGGESTIONS = [
 const formatTime = (date) =>
   date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
-/* ---------------------------------------------------------- */
-/* Sub-components                                               */
-/* ---------------------------------------------------------- */
 function Avatar({ isUser }) {
   return (
     <div
@@ -229,9 +260,6 @@ function TypingBubble() {
   );
 }
 
-/* ---------------------------------------------------------- */
-/* Live dashboard context for the AI                           */
-/* ---------------------------------------------------------- */
 function useDashboardContext() {
   const [context, setContext] = useState(null);
 
@@ -290,10 +318,6 @@ function useDashboardContext() {
   return context;
 }
 
-/* ---------------------------------------------------------- */
-/* Voice input — Web Speech API (SpeechRecognition)             */
-/* Accepts multilingual input — Gemini handles lang detection   */
-/* ---------------------------------------------------------- */
 function useSpeechRecognition({ onResult }) {
   const [isListening, setIsListening] = useState(false);
   const [isSupported, setIsSupported] = useState(true);
@@ -313,8 +337,6 @@ function useSpeechRecognition({ onResult }) {
     const recognition = new SpeechRecognition();
     recognition.continuous = false;
     recognition.interimResults = true;
-    // "mul" isn't widely supported; use "en-IN" as the browser hint but
-    // Gemini backend will detect the actual language from the transcript.
     recognition.lang = "en-IN";
 
     recognition.onstart = () => {
@@ -358,7 +380,7 @@ function useSpeechRecognition({ onResult }) {
       try {
         recognition.stop();
       } catch {
-        /* already stopped */
+        /* no-op */
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -393,7 +415,7 @@ function useSpeechRecognition({ onResult }) {
 }
 
 /* ---------------------------------------------------------- */
-/* Voice output — Humanized, language-aware SpeechSynthesis    */
+/* Reliable Speech Synthesis Hook                             */
 /* ---------------------------------------------------------- */
 function useSpeechSynthesis() {
   const [voiceEnabled, setVoiceEnabled] = useState(true);
@@ -401,36 +423,54 @@ function useSpeechSynthesis() {
   const voicesRef = useRef([]);
   const isSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 
-  // Load voices — Chrome loads them async, Firefox synchronously
   useEffect(() => {
     if (!isSupported) return;
 
     const loadVoices = () => {
-      voicesRef.current = window.speechSynthesis.getVoices();
+      const available = window.speechSynthesis.getVoices();
+      if (available && available.length > 0) {
+        voicesRef.current = available;
+      }
     };
+
     loadVoices();
     window.speechSynthesis.onvoiceschanged = loadVoices;
+
+    const t1 = setTimeout(loadVoices, 500);
+    const t2 = setTimeout(loadVoices, 1500);
+
     return () => {
       window.speechSynthesis.onvoiceschanged = null;
+      clearTimeout(t1);
+      clearTimeout(t2);
     };
   }, [isSupported]);
 
-  /**
-   * speak(text, lang) — lang is the BCP-47 code from the backend (e.g. "ta-IN")
-   * Falls back to Unicode script detection from the text itself.
-   */
   const speak = useCallback(
     (text, lang) => {
       if (!isSupported || !voiceEnabled || !text) return;
-      window.speechSynthesis.cancel();
 
-      // Determine the language: backend hint → text detection → en-IN
+      try {
+        window.speechSynthesis.cancel();
+        if (window.speechSynthesis.paused) {
+          window.speechSynthesis.resume();
+        }
+      } catch (e) {
+        console.warn("SpeechSynthesis reset error:", e);
+      }
+
+      if (voicesRef.current.length === 0) {
+        voicesRef.current = window.speechSynthesis.getVoices();
+      }
+
       const resolvedLang = lang || detectLangFromText(text) || "en-IN";
-      const bestVoice = pickBestVoice(voicesRef.current, resolvedLang);
+      const { text: speakableText, voice, lang: targetLang } = getAudibleTextAndVoice(
+        text,
+        resolvedLang,
+        voicesRef.current
+      );
 
-      // Split into sentence chunks — prevents browser TTS from truncating
-      // long responses and makes speech sound more natural with micro-pauses
-      const chunks = splitSentences(text);
+      const chunks = splitSentences(speakableText);
       let chunkIndex = 0;
 
       const speakNextChunk = () => {
@@ -439,33 +479,50 @@ function useSpeechSynthesis() {
           return;
         }
 
-        const utterance = new SpeechSynthesisUtterance(chunks[chunkIndex]);
-        utterance.lang = resolvedLang;
+        const chunkText = chunks[chunkIndex];
+        if (!chunkText) {
+          chunkIndex++;
+          speakNextChunk();
+          return;
+        }
 
-        // Humanized voice parameters
-        utterance.rate = 0.92;   // Slightly slower = more natural, less robot
-        utterance.pitch = 1.05;  // Very slight warmth above neutral
+        const utterance = new SpeechSynthesisUtterance(chunkText);
+        utterance.lang = targetLang;
+        utterance.rate = 0.95;
+        utterance.pitch = 1.02;
         utterance.volume = 1;
 
-        if (bestVoice) utterance.voice = bestVoice;
+        if (voice) {
+          utterance.voice = voice;
+        }
 
         utterance.onstart = () => {
-          if (chunkIndex === 0) setIsSpeaking(true);
+          setIsSpeaking(true);
         };
+
         utterance.onend = () => {
           chunkIndex++;
           speakNextChunk();
         };
-        utterance.onerror = () => {
-          setIsSpeaking(false);
+
+        utterance.onerror = (e) => {
+          console.warn("SpeechSynthesis utterance notice:", e);
+          chunkIndex++;
+          if (chunkIndex < chunks.length) {
+            speakNextChunk();
+          } else {
+            setIsSpeaking(false);
+          }
         };
 
-        window.speechSynthesis.speak(utterance);
-        chunkIndex++;
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch (err) {
+          console.error("speechSynthesis.speak error:", err);
+          setIsSpeaking(false);
+        }
       };
 
-      // Chrome has a bug where speech synthesis stops after ~15s of continuous
-      // speech. Chunking by sentences mostly avoids this, but as extra safety:
       speakNextChunk();
     },
     [isSupported, voiceEnabled]
@@ -473,7 +530,11 @@ function useSpeechSynthesis() {
 
   const cancel = useCallback(() => {
     if (!isSupported) return;
-    window.speechSynthesis.cancel();
+    try {
+      window.speechSynthesis.cancel();
+    } catch {
+      /* no-op */
+    }
     setIsSpeaking(false);
   }, [isSupported]);
 
@@ -487,9 +548,6 @@ function useSpeechSynthesis() {
   return { voiceEnabled, isSpeaking, isSupported, speak, cancel, toggleVoiceEnabled };
 }
 
-/* ---------------------------------------------------------- */
-/* Main component                                               */
-/* ---------------------------------------------------------- */
 function Assistant() {
   const [message, setMessage] = useState("");
   const [isTyping, setIsTyping] = useState(false);
@@ -549,14 +607,14 @@ function Assistant() {
 
         const data = await res.json();
         const replyText = data.reply || "I received your query but no message was returned.";
-        // Backend provides detectedLang (e.g. "ta-IN"), fallback to text detection
         const replyLang = data.detectedLang || detectLangFromText(replyText);
 
         setMessages((prev) => [
           ...prev,
           { type: "bot", text: replyText, time: new Date() },
         ]);
-        // Pass language so TTS speaks in the right voice
+
+        // Speak aloud
         speak(replyText, replyLang);
       } catch (err) {
         const currentBackend = getBackendUrl();
