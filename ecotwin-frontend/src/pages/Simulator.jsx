@@ -280,7 +280,7 @@ function Simulator() {
   const { predictedAQI, risk, riskColor, carbonIndex, ecoScore, dialAngle } = serverSim ?? localSim;
 
   const recommendations = serverSim
-    ? serverSim.recommendations.map((r) => ({ ...r, Icon: RECOMMENDATION_ICONS[r.key] }))
+    ? serverSim.recommendations.map((r) => ({ ...r, icon: RECOMMENDATION_ICONS[r.key] }))
     : buildRecommendations({ trees, vehicles, industry, ecoScore, risk });
 
   return (
