@@ -1,9 +1,6 @@
 import { useState, useEffect, useRef } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
-/* ---------------------------------------------------------- */
-/* API key                                                      */
-/* ---------------------------------------------------------- */
-const apiKey = "0b294ed82262f68270ccf92376bfbd87";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /* ---------------------------------------------------------- */
@@ -86,7 +83,7 @@ function getHealthStatus(score) {
 /* ---------------------------------------------------------- */
 async function fetchCurrentAqi(lat, lon) {
   const res = await fetch(
-    `https://api.openweathermap.org/data/2.5/air_pollution?lat=${lat}&lon=${lon}&appid=${apiKey}`
+    `${getBackendUrl()}/api/weather/air-quality?lat=${lat}&lon=${lon}`
   );
   if (!res.ok) throw new Error("Failed to fetch AQI data");
   const data = await res.json();
@@ -251,14 +248,6 @@ function HealthGauge({ lat = 12.9716, lon = 77.5946, cityLabel = "Bengaluru" }) 
           Refresh
         </button>
       </div>
-
-      {/* ── Missing key warning ── */}
-      {!apiKey && (
-        <div className="mb-5 flex items-center gap-2 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-400/20 text-rose-300 text-[10px] font-mono uppercase tracking-widest">
-          <IconAlert className="w-4 h-4 shrink-0" />
-          Missing VITE_OPENWEATHER_API_KEY — add it to your .env file.
-        </div>
-      )}
 
       {/* ── Body ── */}
       {loading ? (

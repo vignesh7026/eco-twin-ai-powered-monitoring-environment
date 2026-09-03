@@ -65,6 +65,10 @@ app.use(
 app.use("/api/alerts", require("./routes/alertRoutes"));
 app.use("/api/assistant", require("./routes/assistantRoutes"));
 app.use("/api/history", require("./routes/historyRoutes"));
+app.use("/api/digital-twin", require("./routes/digitalTwinRoutes"));
+app.use("/api/riskmap", require("./routes/riskMapRoutes"));
+app.use("/api/simulator", require("./routes/simulatorRoutes"));
+app.use("/api/timeline", require("./routes/timelineRoutes"));
 
 const PORT = process.env.PORT || 5000;
 

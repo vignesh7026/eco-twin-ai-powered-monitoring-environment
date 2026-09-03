@@ -1,11 +1,9 @@
 import { useState, useEffect } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 /* ---------------------------------------------------------- */
 /* Config                                                       */
 /* ---------------------------------------------------------- */
-// NOTE: never hardcode API keys in client source — anyone can read them
-// from the bundled JS. Set VITE_OPENWEATHER_API_KEY in your .env file.
-const API_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
 const LAT     = 12.9716;
 const LON     = 77.5946;
 const REFRESH = 10 * 60 * 1000;
@@ -158,12 +156,11 @@ function SmartPredictionPanel() {
     if (isRefresh) setRefreshing(true);
     setError(null);
     try {
-      if (!API_KEY) throw new Error("Missing OpenWeather API key. Set VITE_OPENWEATHER_API_KEY in your .env file.");
-
+      const backendUrl = getBackendUrl();
       const [foreRes, pollRes, wxRes] = await Promise.all([
-        fetch(`https://api.openweathermap.org/data/2.5/forecast?lat=${LAT}&lon=${LON}&appid=${API_KEY}&units=metric`),
-        fetch(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${LAT}&lon=${LON}&appid=${API_KEY}`),
-        fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${LAT}&lon=${LON}&appid=${API_KEY}&units=metric`),
+        fetch(`${backendUrl}/api/weather/forecast?lat=${LAT}&lon=${LON}`),
+        fetch(`${backendUrl}/api/weather/air-quality?lat=${LAT}&lon=${LON}`),
+        fetch(`${backendUrl}/api/weather/current?lat=${LAT}&lon=${LON}`),
       ]);
       if (!foreRes.ok) throw new Error("Forecast fetch failed");
 

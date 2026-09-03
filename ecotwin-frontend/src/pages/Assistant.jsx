@@ -1,22 +1,8 @@
 import Sidebar from "../components/Sidebar";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 const BENGALURU = { lat: 12.9716, lon: 77.5946 };
-const OWM_KEY = import.meta.env.VITE_OPENWEATHER_API_KEY;
-
-function getBackendUrl() {
-  const envUrl = import.meta.env.VITE_API_URL;
-  if (envUrl && typeof envUrl === "string" && envUrl.trim() && !envUrl.includes("localhost")) {
-    return envUrl.trim().replace(/\/+$/, "");
-  }
-  if (typeof window !== "undefined" && window.location && window.location.hostname) {
-    const host = window.location.hostname;
-    if (host !== "localhost" && host !== "127.0.0.1") {
-      return "https://ecotwin-backend-c2mo.onrender.com";
-    }
-  }
-  return "http://localhost:5000";
-}
 
 /* ---------------------------------------------------------- */
 /* Language detection from Unicode script ranges               */
@@ -341,12 +327,13 @@ function useDashboardContext() {
 
     async function load() {
       try {
+        const backendUrl = getBackendUrl();
         const [weatherRes, aqiRes] = await Promise.all([
           fetch(
-            `https://api.openweathermap.org/data/2.5/weather?lat=${BENGALURU.lat}&lon=${BENGALURU.lon}&units=metric&appid=${OWM_KEY}`
+            `${backendUrl}/api/weather/current?lat=${BENGALURU.lat}&lon=${BENGALURU.lon}`
           ),
           fetch(
-            `https://api.openweathermap.org/data/2.5/air_pollution?lat=${BENGALURU.lat}&lon=${BENGALURU.lon}&appid=${OWM_KEY}`
+            `${backendUrl}/api/weather/air-quality?lat=${BENGALURU.lat}&lon=${BENGALURU.lon}`
           ),
         ]);
         const weatherJson = await weatherRes.json();

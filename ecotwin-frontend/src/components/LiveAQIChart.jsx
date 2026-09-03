@@ -8,13 +8,8 @@ import {
   Tooltip,
   ResponsiveContainer,
 } from "recharts";
+import { getBackendUrl } from "../lib/backendUrl";
 
-/* ---------------------------------------------------------- */
-/* Config                                                       */
-/* ---------------------------------------------------------- */
-// NOTE: never hardcode API keys in client source — anyone can read them
-// from the bundled JS. Set VITE_OPENWEATHER_API_KEY in your .env file.
-const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 /* ---------------------------------------------------------- */
@@ -79,11 +74,10 @@ function getRisk(aqi) {
 /* Fetch                                                        */
 /* ---------------------------------------------------------- */
 async function fetchAqiHistory(lat, lon, hours) {
-  if (!apiKey) throw new Error("Missing OpenWeather API key. Set VITE_OPENWEATHER_API_KEY in your .env file.");
   const now   = Math.floor(Date.now() / 1000);
   const start = now - hours * 3600;
   const res   = await fetch(
-    `https://api.openweathermap.org/data/2.5/air_pollution/history?lat=${lat}&lon=${lon}&start=${start}&end=${now}&appid=${apiKey}`
+    `${getBackendUrl()}/api/weather/air-quality/history?lat=${lat}&lon=${lon}&start=${start}&end=${now}`
   );
   if (!res.ok) throw new Error("Failed to fetch AQI history");
   const data = await res.json();

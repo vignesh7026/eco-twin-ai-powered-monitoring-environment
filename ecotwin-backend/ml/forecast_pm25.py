@@ -51,46 +51,140 @@ import matplotlib.pyplot as plt
 # here as a direct benchmark against that finding, and report R² (not
 # just MAE/RMSE) to keep results comparable to this literature.
 
-DATA_PATH = "data/ecotwin_history.csv"
+# DATA_PATH = "data/bengaluru_historical.csv"  # Kaggle CPCB dataset (large-volume training data)
+DATA_PATH = "data/ecotwin_history.csv"          # your own live-logged EcoTwin/MongoDB data
 FORECAST_HORIZON_HOURS = 3  # predict PM2.5 this many hours ahead
 
 
+def normalize_columns(df):
+    """
+    Detects which dataset format this is and renames columns to a common
+    internal schema so the rest of the pipeline doesn't care which source
+    it came from.
+
+    Kaggle CPCB format (city_hour.csv): Datetime, City, PM2.5, PM10, NO,
+    NO2, NOx, NH3, CO, SO2, O3, Benzene, Toluene, Xylene, AQI, AQI_Bucket
+    — NOTE: no weather columns (temp/humidity/wind/rain) in this dataset.
+
+    EcoTwin MongoDB export format: timestamp, lat, lon, pm2_5, pm10, co,
+    no2, o3, so2, aqi_category, temp_c, humidity, wind_speed, rain_1h,
+    weather_condition — has weather columns.
+    """
+    if "Datetime" in df.columns and "PM2.5" in df.columns:
+        # Kaggle CPCB format
+        rename_map = {
+            "Datetime": "timestamp", "PM2.5": "pm2_5", "PM10": "pm10",
+            "NO2": "no2", "SO2": "so2", "O3": "o3", "CO": "co",
+            "NO": "no", "NOx": "nox", "NH3": "nh3",
+        }
+        df = df.rename(columns={k: v for k, v in rename_map.items() if k in df.columns})
+    elif "timestamp" in df.columns and "pm2_5" in df.columns:
+        pass  # already in EcoTwin's internal format, nothing to rename
+    else:
+        raise ValueError(
+            "Unrecognized CSV format — expected either Kaggle CPCB columns "
+            "(Datetime, PM2.5, ...) or EcoTwin export columns (timestamp, "
+            "pm2_5, ...). Check the file's actual header row."
+        )
+    return df
+
+
 def load_and_prepare(path):
-    df = pd.read_csv(path, parse_dates=["timestamp"])
+    df = pd.read_csv(path)
+    df = normalize_columns(df)
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
     df = df.sort_values("timestamp").reset_index(drop=True)
     df = df.dropna(subset=["pm2_5"])
+
+    # --- Resample to hourly granularity ---
+    # IMPORTANT: OpenWeatherMap's Air Pollution API updates its underlying
+    # model roughly once per hour, not continuously. Logging every 15 min
+    # (as logHistory.js does) mostly captures repeated/duplicate values
+    # between real updates — confirmed empirically: on this project's own
+    # dataset, ~93% of consecutive 15-min PM2.5 readings were identical.
+    # Training lag/forecast features on that raw 15-min data lets a trivial
+    # "copy the last value" (naive persistence) model look artificially
+    # perfect, since it's mostly just predicting an unchanged value. We
+    # resample to hourly (mean of whatever samples fell in that hour) so
+    # the model is learning from genuine changes in the underlying data,
+    # not polling artifacts. This also makes the forecast horizon
+    # (FORECAST_HORIZON_HOURS) meaningful in real time again.
+    df = df.set_index("timestamp")
+    # Union of possible columns across both dataset formats — whichever
+    # exist in this particular file get used, others are simply skipped.
+    candidate_cols = ["pm2_5", "pm10", "co", "no2", "o3", "so2", "no", "nox", "nh3",
+                       "temp_c", "humidity", "wind_speed", "rain_1h"]
+    numeric_cols = [c for c in candidate_cols if c in df.columns]
+    df = df[numeric_cols].resample("1h").mean().dropna(subset=["pm2_5"])
+    df = df.reset_index()
 
     # Time-based features — traffic/industrial activity follows daily rhythms
     df["hour"] = df["timestamp"].dt.hour
     df["day_of_week"] = df["timestamp"].dt.dayofweek
     df["is_weekend"] = (df["day_of_week"] >= 5).astype(int)
 
-    # Assumes ~15-min sampling interval (4 rows/hour) from logHistory.js
-    rows_per_hour = 4
-    df["pm25_lag_1h"] = df["pm2_5"].shift(1 * rows_per_hour)
-    df["pm25_lag_3h"] = df["pm2_5"].shift(3 * rows_per_hour)
-    df["pm25_lag_6h"] = df["pm2_5"].shift(6 * rows_per_hour)
+    # Now working in hourly rows, so 1 row = 1 hour (not 4 rows/hour anymore)
+    df["pm25_lag_1h"] = df["pm2_5"].shift(1)
+    df["pm25_lag_3h"] = df["pm2_5"].shift(3)
+    df["pm25_lag_6h"] = df["pm2_5"].shift(6)
 
     # Target: PM2.5 N hours in the future
-    df["target"] = df["pm2_5"].shift(-FORECAST_HORIZON_HOURS * rows_per_hour)
+    df["target"] = df["pm2_5"].shift(-FORECAST_HORIZON_HOURS)
 
     df = df.dropna(subset=["pm25_lag_1h", "pm25_lag_3h", "pm25_lag_6h", "target"])
+
+    # --- Clip physically implausible sensor spikes ---
+    # Raw CPCB ground-station data is known to contain occasional extreme
+    # outlier readings from sensor malfunctions (values in the thousands
+    # of µg/m³ are not physically realistic ambient PM2.5 — India's worst
+    # recorded episodes, e.g. Delhi during Diwali, still generally stay
+    # under ~1000). Left uncorrected, these spikes disproportionately
+    # destabilize boosting methods like AdaBoost, which repeatedly
+    # up-weight "hard" (i.e. outlier) examples each round. We clip to the
+    # 99.5th percentile rather than deleting rows, to preserve genuinely
+    # high-but-real pollution events while removing sensor-error spikes.
+    pm25_cap = df["pm2_5"].quantile(0.995)
+    for col in ["pm2_5", "pm25_lag_1h", "pm25_lag_3h", "pm25_lag_6h", "target"]:
+        df[col] = df[col].clip(upper=pm25_cap)
+
+    # Stash which auxiliary columns are actually usable as features. Only
+    # keep columns that are at least 70% populated after hourly resampling
+    # — a column that's mostly NaN (common in the Kaggle dataset for
+    # things like Benzene/Toluene/Xylene, and sometimes NO/NOx/NH3) adds
+    # more noise than signal once imputed, and can silently degrade the
+    # model rather than helping it.
+    completeness_threshold = 0.70
+    df.attrs["available_aux_features"] = [
+        c for c in ["pm10", "co", "no2", "o3", "so2", "no", "nox", "nh3",
+                     "temp_c", "humidity", "wind_speed", "rain_1h"]
+        if c in df.columns and df[c].notna().mean() >= completeness_threshold
+    ]
     return df
 
 
 def train_and_evaluate(df):
-    features = [
-        "pm2_5", "pm25_lag_1h", "pm25_lag_3h", "pm25_lag_6h",
-        "temp_c", "humidity", "wind_speed", "rain_1h",
-        "hour", "day_of_week", "is_weekend",
-    ]
+    core_features = ["pm2_5", "pm25_lag_1h", "pm25_lag_3h", "pm25_lag_6h",
+                      "hour", "day_of_week", "is_weekend"]
+    aux_features = df.attrs.get("available_aux_features", [])
+    features = core_features + aux_features
+    print(f"Using features: {features}")
+
     X = df[features]
     y = df["target"]
 
     # Chronological split — critical for time series, see module docstring
     split_idx = int(len(df) * 0.8)
-    X_train, X_test = X.iloc[:split_idx], X.iloc[split_idx:]
+    X_train, X_test = X.iloc[:split_idx].copy(), X.iloc[split_idx:].copy()
     y_train, y_test = y.iloc[:split_idx], y.iloc[split_idx:]
+
+    # Impute any remaining gaps (columns kept above 70% complete can still
+    # have some missing values) using TRAINING-set medians only — using
+    # test-set statistics here would leak future information into the
+    # imputation, the same leakage risk the chronological split above is
+    # already guarding against.
+    train_medians = X_train.median()
+    X_train = X_train.fillna(train_medians)
+    X_test = X_test.fillna(train_medians)
 
     results = {}
 
@@ -121,10 +215,14 @@ def train_and_evaluate(df):
     # was the top-performing model in their surveyed review (RMSE 2.9,
     # R² 0.96 on their European datasets). Comparing against it here
     # tests whether that result transfers to Bengaluru's conditions.
+    # Configured conservatively (shallow base tree, low learning rate,
+    # loss="linear") since AdaBoost is sensitive to outliers, and raw
+    # CPCB sensor data can contain extreme spikes even after clipping.
     ada = AdaBoostRegressor(
-        estimator=DecisionTreeRegressor(max_depth=4),
-        n_estimators=200,
-        learning_rate=0.05,
+        estimator=DecisionTreeRegressor(max_depth=3),
+        n_estimators=100,
+        learning_rate=0.03,
+        loss="linear",
         random_state=42,
     )
     ada.fit(X_train, y_train)
@@ -266,17 +364,68 @@ def compare_against_literature(results):
     print(verdict)
     print("\n(Remember to replace '[X] days' with your actual collection duration)")
 
+    # --- Bar chart: your models vs. literature benchmarks, side by side ---
+    # Mirrors the RMSE/R2 bar-chart style used in Benny et al.'s Figs 1-3,
+    # so this figure drops directly into your paper for visual comparison.
+    _plot_comparison_bars(results, LITERATURE_BENCHMARKS, metric="RMSE",
+                           ylabel="RMSE (μg/m³)", filename="comparison_rmse.png",
+                           lower_is_better=True)
+    _plot_comparison_bars(results, LITERATURE_BENCHMARKS, metric="R2",
+                           ylabel="R² Score", filename="comparison_r2.png",
+                           lower_is_better=False)
+
     return LITERATURE_BENCHMARKS
+
+
+def _plot_comparison_bars(results, literature, metric, ylabel, filename, lower_is_better):
+    names, values, colors = [], [], []
+
+    for name, m in results.items():
+        if m.get(metric) is not None:
+            names.append(f"{name}\n(this work)")
+            values.append(m[metric])
+            colors.append("#2E86AB")  # blue = this work
+
+    for name, m in literature.items():
+        if m.get(metric) is not None:
+            names.append(name)
+            values.append(m[metric])
+            colors.append("#A23B72")  # magenta = literature
+
+    if not values:
+        print(f"Skipping {metric} comparison plot — no values available.")
+        return
+
+    plt.figure(figsize=(max(10, len(names) * 1.1), 6))
+    bars = plt.bar(range(len(names)), values, color=colors)
+    plt.xticks(range(len(names)), names, rotation=45, ha="right", fontsize=8)
+    plt.ylabel(ylabel)
+    plt.title(f"{metric.replace('R2', 'R²')} Comparison — This Work vs. Benny et al. (2026) Literature")
+
+    for bar, val in zip(bars, values):
+        plt.text(bar.get_x() + bar.get_width() / 2, bar.get_height(),
+                  f"{val:.2f}", ha="center", va="bottom", fontsize=8)
+
+    # Legend
+    from matplotlib.patches import Patch
+    plt.legend(handles=[
+        Patch(color="#2E86AB", label="This work (Bengaluru)"),
+        Patch(color="#A23B72", label="Literature (Benny et al., 2026)"),
+    ])
+
+    plt.tight_layout()
+    plt.savefig(filename, dpi=150)
+    print(f"Saved plot: {filename}")
 
 
 if __name__ == "__main__":
     df = load_and_prepare(DATA_PATH)
-    print(f"Loaded {len(df)} usable rows after feature engineering.")
-    if len(df) < 200:
+    print(f"Loaded {len(df)} usable hourly rows after resampling + feature engineering.")
+    if len(df) < 100:
         print(
-            "\n⚠️  Warning: fewer than 200 rows. Results will be unreliable. "
-            "Let logHistory.js run longer before training — aim for 1000+ rows "
-            "(~1 week+ at 15-min intervals) for a defensible paper result."
+            "\n⚠️  Warning: fewer than 100 hourly rows (~4 days). Results will "
+            "be unreliable. Let logHistory.js run longer — aim for 300+ hourly "
+            "rows (~2 weeks) for a defensible paper result."
         )
     results, importance = train_and_evaluate(df)
     compare_against_literature(results)

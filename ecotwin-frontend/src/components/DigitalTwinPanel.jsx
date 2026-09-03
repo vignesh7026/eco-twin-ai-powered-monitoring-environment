@@ -1,25 +1,17 @@
 import { useEffect, useState } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 /* ---------------------------------------------------------- */
-/* API key — set VITE_OPENWEATHER_API_KEY in a .env file at    */
-/* your project root. Same key used by Weather.jsx / RiskMap /  */
-/* RiskRadar.jsx.                                                */
-/*                                                                */
-/* This component accepts an optional `liveData` prop so a       */
-/* parent (e.g. Dashboard.jsx) can fetch once and share it across */
-/* RiskRadar / DigitalTwinPanel / StatCards instead of each one   */
-/* hitting the OpenWeather API independently. If no prop is        */
-/* passed, it fetches on its own as a standalone fallback.         */
+/* This component accepts an optional `liveData` prop so a     */
+/* parent (e.g. Dashboard.jsx) can fetch once and share it      */
+/* across RiskRadar / DigitalTwinPanel / StatCards instead of   */
+/* each one hitting the backend independently. If no prop is    */
+/* passed, it fetches on its own as a standalone fallback.       */
 /* ---------------------------------------------------------- */
-const apiKey = "0b294ed82262f68270ccf92376bfbd87";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const CITY = { name: "Bengaluru", lat: 12.9716, lon: 77.5946 };
 
 const clamp = (n, min, max) => Math.max(min, Math.min(max, n));
-
-/* Static facts that don't move in real time */
-const POPULATION = "13.6M";
-const GREEN_COVER = "38%";
 
 /* ---------------------------------------------------------- */
 /* PM2.5 (µg/m³) -> US EPA AQI conversion                       */
@@ -65,30 +57,23 @@ function deriveTwinMetrics({ aqi, tempC, windSpeed, humidity }) {
 }
 
 async function fetchLiveTwinData() {
-  if (!apiKey) return { error: "missing_key" };
-
   try {
-    const [wRes, pRes] = await Promise.all([
-      fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}&units=metric`
-      ),
-      fetch(
-        `https://api.openweathermap.org/data/2.5/air_pollution?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}`
-      ),
-    ]);
+    const res = await fetch(`${getBackendUrl()}/api/digital-twin?city=${CITY.name}`);
+    if (!res.ok) throw new Error("Live data request failed");
 
-    if (!wRes.ok || !pRes.ok) throw new Error("Live data request failed");
+    const { data } = await res.json();
 
-    const w = await wRes.json();
-    const p = await pRes.json();
+    const aqi = pm25ToAQI(data.pm25 ?? 0);
+    const tempC = data.temp ?? 25;
+    const windSpeed = data.windSpeed ?? 0;
+    const humidity = data.humidity ?? 0;
 
-    const pm25 = p?.list?.[0]?.components?.pm2_5 ?? 0;
-    const aqi = pm25ToAQI(pm25);
-    const tempC = w?.main?.temp ?? 25;
-    const windSpeed = w?.wind?.speed ?? 0;
-    const humidity = w?.main?.humidity ?? 0;
-
-    return { metrics: deriveTwinMetrics({ aqi, tempC, windSpeed, humidity }), error: null };
+    return {
+      metrics: deriveTwinMetrics({ aqi, tempC, windSpeed, humidity }),
+      population: data.population,
+      greenCover: data.greenCover != null ? `${data.greenCover}%` : "N/A",
+      error: null,
+    };
   } catch (err) {
     return { error: "fetch_failed" };
   }
@@ -202,14 +187,6 @@ function DigitalTwinPanel({ liveData }) {
         </span>
       </div>
 
-      {live?.error === "missing_key" && (
-        <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs mb-6">
-          <IconAlertTriangle className="w-4 h-4 shrink-0" />
-          Missing VITE_OPENWEATHER_API_KEY — add it to your .env file to drive this twin with
-          live conditions.
-        </div>
-      )}
-
       {live?.error === "fetch_failed" && (
         <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs mb-6">
           <IconAlertTriangle className="w-4 h-4 shrink-0" />
@@ -218,8 +195,12 @@ function DigitalTwinPanel({ liveData }) {
       )}
 
       <div className="grid grid-cols-4 gap-5">
-        <MiniStat label="Population" value={POPULATION} />
-        <MiniStat label="Green Cover" value={GREEN_COVER} color="text-emerald-400" />
+        <MiniStat label="Population" value={hasLiveData ? live.population : !live ? "—" : "N/A"} />
+        <MiniStat
+          label="Green Cover"
+          value={hasLiveData ? live.greenCover : !live ? "—" : "N/A"}
+          color="text-emerald-400"
+        />
         <MiniStat
           label="Energy Usage"
           value={hasLiveData ? `${live.metrics.energyUsage}%` : !live ? "—" : "N/A"}

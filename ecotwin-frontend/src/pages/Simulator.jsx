@@ -1,5 +1,6 @@
 import Sidebar from "../components/Sidebar";
-import { useMemo, useState } from "react";
+import { useMemo, useState, useEffect } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 /* ---------------------------------------------------------- */
 /* Inline icon set — matches Assistant.jsx convention          */
@@ -114,6 +115,43 @@ function buildRecommendations({ trees, vehicles, industry, ecoScore, risk }) {
   return recs;
 }
 
+const RECOMMENDATION_ICONS = { trees: IconLeaf, vehicles: IconCar, industry: IconFactory, eco: IconBolt };
+
+/* ---------------------------------------------------------- */
+/* Debounced call to POST /api/simulator/run — the client-side  */
+/* useSimulation() above gives instant slider feedback, this     */
+/* reconciles the displayed numbers against the backend, which   */
+/* is the actual source of truth for the formula.                */
+/* ---------------------------------------------------------- */
+function useServerSimulation(trees, vehicles, industry) {
+  const [result, setResult] = useState(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const timer = setTimeout(async () => {
+      try {
+        const res = await fetch(`${getBackendUrl()}/api/simulator/run`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trees, vehicles, industry }),
+        });
+        if (!res.ok) throw new Error("simulator request failed");
+        const { data } = await res.json();
+        if (!cancelled) setResult({ trees, vehicles, industry, data });
+      } catch {
+        // backend unreachable — the caller falls back to the local formula
+      }
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [trees, vehicles, industry]);
+
+  return result;
+}
+
 /* ---------------------------------------------------------- */
 /* Sub-components                                               */
 /* ---------------------------------------------------------- */
@@ -226,10 +264,24 @@ function Simulator() {
   const [vehicles, setVehicles] = useState(5000);
   const [industry, setIndustry] = useState(50);
 
-  const { predictedAQI, risk, riskColor, carbonIndex, ecoScore, dialAngle } =
-    useSimulation(trees, vehicles, industry);
+  const localSim = useSimulation(trees, vehicles, industry);
+  const serverResult = useServerSimulation(trees, vehicles, industry);
+  // Only trust the backend result once it matches the current slider
+  // values — otherwise it's a stale response from before the last drag,
+  // and the instant local formula should keep driving the display.
+  const serverSim =
+    serverResult &&
+    serverResult.trees === trees &&
+    serverResult.vehicles === vehicles &&
+    serverResult.industry === industry
+      ? serverResult.data
+      : null;
 
-  const recommendations = buildRecommendations({ trees, vehicles, industry, ecoScore, risk });
+  const { predictedAQI, risk, riskColor, carbonIndex, ecoScore, dialAngle } = serverSim ?? localSim;
+
+  const recommendations = serverSim
+    ? serverSim.recommendations.map((r) => ({ ...r, Icon: RECOMMENDATION_ICONS[r.key] }))
+    : buildRecommendations({ trees, vehicles, industry, ecoScore, risk });
 
   return (
     <div className="bg-[#0B1120] min-h-screen relative overflow-hidden">

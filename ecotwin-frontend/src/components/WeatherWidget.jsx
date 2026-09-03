@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { getBackendUrl } from '../lib/backendUrl';
 
 // ---------------------------------------------------------------------------
 // Config — Bengaluru by default, matches the rest of EcoTwin's components
@@ -311,13 +312,13 @@ function WeatherWidget() {
     if (isManual) setRefreshing(true);
     setError(null);
     try {
-      const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
+      const backendUrl = getBackendUrl();
       const [weatherRes, pollutionRes] = await Promise.all([
         fetch(
-          `https://api.openweathermap.org/data/2.5/weather?lat=${LAT}&lon=${LON}&units=metric&appid=${apiKey}`
+          `${backendUrl}/api/weather/current?lat=${LAT}&lon=${LON}`
         ),
         fetch(
-          `https://api.openweathermap.org/data/2.5/air_pollution?lat=${LAT}&lon=${LON}&appid=${apiKey}`
+          `${backendUrl}/api/weather/air-quality?lat=${LAT}&lon=${LON}`
         ),
       ]);
 

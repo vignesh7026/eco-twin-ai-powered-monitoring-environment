@@ -1,10 +1,6 @@
 import { useEffect, useState } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
-/* ---------------------------------------------------------- */
-/* API key — set VITE_OPENWEATHER_API_KEY in a .env file at    */
-/* your project root. Same key used by Weather.jsx / RiskMap.   */
-/* ---------------------------------------------------------- */
-const apiKey = "0b294ed82262f68270ccf92376bfbd87";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const CITY = { name: "Bengaluru", lat: 12.9716, lon: 77.5946 };
 
@@ -63,15 +59,14 @@ const toneStyles = {
 };
 
 async function fetchLiveRisks() {
-  if (!apiKey) return { error: "missing_key" };
-
   try {
+    const backendUrl = getBackendUrl();
     const [wRes, pRes] = await Promise.all([
       fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}&units=metric`
+        `${backendUrl}/api/weather/current?lat=${CITY.lat}&lon=${CITY.lon}`
       ),
       fetch(
-        `https://api.openweathermap.org/data/2.5/air_pollution?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}`
+        `${backendUrl}/api/weather/air-quality?lat=${CITY.lat}&lon=${CITY.lon}`
       ),
     ]);
 
@@ -163,14 +158,6 @@ function RiskRadar() {
           {refreshing ? "Syncing" : CITY.name}
         </span>
       </div>
-
-      {live?.error === "missing_key" && (
-        <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs mb-4">
-          <IconAlertTriangle className="w-4 h-4 shrink-0" />
-          Missing VITE_OPENWEATHER_API_KEY — add it to your .env file to power this radar with
-          live conditions.
-        </div>
-      )}
 
       {live?.error === "fetch_failed" && (
         <div className="flex items-center gap-2 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-xs mb-4">

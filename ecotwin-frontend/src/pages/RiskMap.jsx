@@ -5,12 +5,8 @@ import Navbar from "../components/Navbar";
 import { MapContainer, TileLayer, Marker, Popup, Circle } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
+import { getBackendUrl } from "../lib/backendUrl";
 
-/* ---------------------------------------------------------- */
-/* API key — set VITE_OPENWEATHER_API_KEY in a .env file at    */
-/* your project root. Same key used by RiskMap3D.               */
-/* ---------------------------------------------------------- */
-const apiKey = "0b294ed82262f68270ccf92376bfbd87";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 
 /* Static facts that don't change in real time */
@@ -71,49 +67,32 @@ function popToNumber(popStr) {
 }
 
 /* ---------------------------------------------------------- */
-/* Live data fetch per city                                     */
+/* Derive this page's display fields (risk label, flood risk,   */
+/* AI insight, carbon index) from one city's raw backend reading */
 /* ---------------------------------------------------------- */
-async function fetchCityLive(name, base) {
-  try {
-    const [wRes, pRes] = await Promise.all([
-      fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${base.lat}&lon=${base.lon}&appid=${apiKey}&units=metric`
-      ),
-      fetch(
-        `https://api.openweathermap.org/data/2.5/air_pollution?lat=${base.lat}&lon=${base.lon}&appid=${apiKey}`
-      ),
-    ]);
+function computeCityView(raw) {
+  if (!raw || raw.error) return { city: raw?.city, error: true };
 
-    if (!wRes.ok || !pRes.ok) throw new Error(`Failed to fetch live data for ${name}`);
+  const aqi = pm25ToAQI(raw.pm25 ?? 0);
+  const risk = getRisk(aqi);
+  const humidityVal = raw.humidity ?? 0;
+  const flood = getFloodRisk(raw.weatherMain, humidityVal);
+  const tempVal = Math.round(raw.temp ?? 0);
+  const carbonIndex = Math.round(aqi * 0.55);
 
-    const w = await wRes.json();
-    const p = await pRes.json();
-
-    const pm25 = p?.list?.[0]?.components?.pm2_5 ?? 0;
-    const aqi = pm25ToAQI(pm25);
-    const risk = getRisk(aqi);
-    const humidityVal = w?.main?.humidity ?? 0;
-    const weatherMain = w?.weather?.[0]?.main ?? "—";
-    const flood = getFloodRisk(weatherMain, humidityVal);
-    const tempVal = Math.round(w?.main?.temp ?? 0);
-    const carbonIndex = Math.round(aqi * 0.55);
-
-    return {
-      city: name,
-      aqi,
-      risk: risk.label,
-      riskColor: risk.color,
-      temperature: `${tempVal}°C`,
-      humidity: `${humidityVal}%`,
-      floodRisk: flood.label,
-      floodColor: flood.color,
-      carbonIndex,
-      insight: generateInsight({ aqi, floodLabel: flood.label, humidity: humidityVal }),
-      error: false,
-    };
-  } catch (err) {
-    return { city: name, error: true };
-  }
+  return {
+    city: raw.city,
+    aqi,
+    risk: risk.label,
+    riskColor: risk.color,
+    temperature: `${tempVal}°C`,
+    humidity: `${humidityVal}%`,
+    floodRisk: flood.label,
+    floodColor: flood.color,
+    carbonIndex,
+    insight: generateInsight({ aqi, floodLabel: flood.label, humidity: humidityVal }),
+    error: false,
+  };
 }
 
 /* ---------------------------------------------------------- */
@@ -142,13 +121,6 @@ const IconRefresh = ({ className = "w-4 h-4" }) => (
   <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
     <path d="M21 12a9 9 0 10-2.6 6.4" />
     <polyline points="21 5 21 12 14 12" />
-  </svg>
-);
-
-const IconAlertTriangle = ({ className = "w-4 h-4" }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M10.3 3.9 1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
-    <path d="M12 9v4M12 17h.01" />
   </svg>
 );
 
@@ -207,17 +179,20 @@ function RiskMap() {
   const loadAll = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
 
-    const names = Object.keys(CITY_CONFIG);
-    const results = await Promise.all(
-      names.map((name) => fetchCityLive(name, CITY_CONFIG[name]))
-    );
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/riskmap/cities`);
+      const { data } = await res.json();
 
-    const merged = {};
-    results.forEach((r) => {
-      merged[r.city] = r;
-    });
+      const merged = {};
+      (data || []).forEach((raw) => {
+        merged[raw.city] = computeCityView(raw);
+      });
+      setLiveData(merged);
+    } catch {
+      // keep last-known liveData on failure; individual cities already
+      // render their own "unavailable" state when missing
+    }
 
-    setLiveData(merged);
     setLastUpdated(new Date());
     setLoading(false);
     setRefreshing(false);
@@ -276,14 +251,6 @@ function RiskMap() {
               </button>
             </div>
           </div>
-
-          {!apiKey && (
-            <div className="mb-6 flex items-center gap-2 px-5 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
-              <IconAlertTriangle />
-              Missing VITE_OPENWEATHER_API_KEY — add it to a .env file at your project root to
-              enable live data.
-            </div>
-          )}
 
           <div className="grid lg:grid-cols-5 gap-8">
             {/* MAP */}

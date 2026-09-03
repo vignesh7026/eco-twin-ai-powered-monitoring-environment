@@ -1,2 +1,5 @@
 ﻿.env
 node_modules/
+ml/data/
+ml/city_hour.csv
+ml/*.png

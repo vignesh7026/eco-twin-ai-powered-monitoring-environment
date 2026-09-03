@@ -1,15 +1,12 @@
 import { useEffect, useState } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 /* ---------------------------------------------------------- */
-/* API key — set VITE_OPENWEATHER_API_KEY in a .env file at    */
-/* your project root. Same key used elsewhere in the app.       */
-/*                                                                */
-/* Accepts an optional `liveData` prop so a parent (e.g.          */
-/* Dashboard.jsx) can share one fetch across components instead   */
-/* of each one calling OpenWeather independently. Falls back to    */
-/* its own fetch if no prop is passed.                              */
+/* Accepts an optional `liveData` prop so a parent (e.g.       */
+/* Dashboard.jsx) can share one fetch across components instead */
+/* of each one hitting the backend independently. Falls back to */
+/* its own fetch if no prop is passed.                           */
 /* ---------------------------------------------------------- */
-const apiKey = "0b294ed82262f68270ccf92376bfbd87";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
 const CITY = { name: "Bengaluru", lat: 12.9716, lon: 77.5946 };
 
@@ -26,11 +23,9 @@ function getFloodAssessment(weatherMain, humidity, rainVolume) {
 }
 
 async function fetchLiveAlert() {
-  if (!apiKey) return { error: "missing_key" };
-
   try {
     const res = await fetch(
-      `https://api.openweathermap.org/data/2.5/weather?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}&units=metric`
+      `${getBackendUrl()}/api/weather/current?lat=${CITY.lat}&lon=${CITY.lon}`
     );
     if (!res.ok) throw new Error("Live data request failed");
 
@@ -126,9 +121,7 @@ function AlertBanner({ liveData }) {
         <div className="flex items-center gap-3">
           <IconAlertTriangle className="w-5 h-5 text-slate-500 shrink-0" />
           <p className="text-sm">
-            {live.error === "missing_key"
-              ? "Flood monitoring is offline — add VITE_OPENWEATHER_API_KEY to enable live alerts."
-              : "Couldn't reach the weather service. Retrying shortly."}
+            Couldn't reach the weather service. Retrying shortly.
           </p>
         </div>
         <button

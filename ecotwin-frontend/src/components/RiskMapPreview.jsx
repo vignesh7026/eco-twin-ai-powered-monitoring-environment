@@ -1,9 +1,6 @@
 import { useState, useEffect } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
-/* ---------------------------------------------------------- */
-/* API key                                                      */
-/* ---------------------------------------------------------- */
-const apiKey = "0b294ed82262f68270ccf92376bfbd87";
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
 const CITIES_BASE = [
@@ -103,23 +100,26 @@ function getFloodRisk(weatherMain, humidity) {
 }
 
 /* ---------------------------------------------------------- */
-/* Fetch                                                        */
+/* Derive this panel's display fields from one city's raw       */
+/* backend reading, merged with its display-only pin position   */
 /* ---------------------------------------------------------- */
-async function fetchCityData(base) {
-  const [weatherRes, pollutionRes] = await Promise.all([
-    fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${base.lat}&lon=${base.lon}&appid=${apiKey}&units=metric`),
-    fetch(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${base.lat}&lon=${base.lon}&appid=${apiKey}`),
-  ]);
-  if (!weatherRes.ok || !pollutionRes.ok) throw new Error(`Failed to fetch live data for ${base.city}`);
-  const weather   = await weatherRes.json();
-  const pollution = await pollutionRes.json();
-  const pm25      = pollution?.list?.[0]?.components?.pm2_5 ?? 0;
-  const aqi       = pm25ToAQI(pm25);
-  const risk      = getRisk(aqi);
-  const humidity  = weather?.main?.humidity ?? 0;
-  const weatherMain = weather?.weather?.[0]?.main ?? "—";
-  const flood     = getFloodRisk(weatherMain, humidity);
-  return { ...base, aqi, risk: risk.label, riskColor: risk.color, temp: Math.round(weather?.main?.temp ?? 0), humidity, weatherMain, flood: flood.label, floodColor: flood.color, error: false };
+function computeCityView(raw, base) {
+  const aqi = pm25ToAQI(raw.pm25 ?? 0);
+  const risk = getRisk(aqi);
+  const humidity = raw.humidity ?? 0;
+  const flood = getFloodRisk(raw.weatherMain, humidity);
+  return {
+    ...base,
+    aqi,
+    risk: risk.label,
+    riskColor: risk.color,
+    temp: Math.round(raw.temp ?? 0),
+    humidity,
+    weatherMain: raw.weatherMain,
+    flood: flood.label,
+    floodColor: flood.color,
+    error: false,
+  };
 }
 
 /* ---------------------------------------------------------- */
@@ -186,13 +186,18 @@ function RiskMap3D() {
 
   const loadAll = async (isRefresh = false) => {
     if (isRefresh) setRefreshing(true);
-    const results = await Promise.all(
-      CITIES_BASE.map(async (base) => {
-        try   { return await fetchCityData(base); }
-        catch { return { ...base, error: true };   }
-      })
-    );
-    setCityData(results);
+    try {
+      const res = await fetch(`${getBackendUrl()}/api/riskmap/cities`);
+      const { data } = await res.json();
+      const byCity = Object.fromEntries((data || []).map((r) => [r.city, r]));
+      const results = CITIES_BASE.map((base) => {
+        const raw = byCity[base.city];
+        return raw && !raw.error ? computeCityView(raw, base) : { ...base, error: true };
+      });
+      setCityData(results);
+    } catch {
+      setCityData(CITIES_BASE.map((base) => ({ ...base, error: true })));
+    }
     setLastUpdated(new Date());
     setLoading(false);
     setRefreshing(false);
@@ -267,13 +272,6 @@ function RiskMap3D() {
             </p>
           )}
 
-          {/* Missing key warning */}
-          {!apiKey && (
-            <div className="mt-4 flex items-center gap-2 px-4 py-3 rounded-2xl bg-rose-500/10 border border-rose-400/20 text-rose-300 text-[10px] font-mono uppercase tracking-widest">
-              <IconAlert className="w-4 h-4 shrink-0" />
-              Missing VITE_OPENWEATHER_API_KEY — add it to a .env file at your project root.
-            </div>
-          )}
         </div>
 
         {/* ── Map + Panel ── */}

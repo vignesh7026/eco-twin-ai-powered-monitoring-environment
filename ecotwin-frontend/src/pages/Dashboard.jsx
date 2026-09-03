@@ -16,13 +16,8 @@ import Earth3D from "../components/Earth3D";
 import LiveAQIChart from "../components/LiveAQIChart";
 import SmartPredictionPanel from "../components/SmartPredictionPanel";
 import AIOrb from "../components/AIOrb";
+import { getBackendUrl } from "../lib/backendUrl";
 
-/* ---------------------------------------------------------- */
-/* API key                                                      */
-/* ---------------------------------------------------------- */
-// NOTE: never hardcode API keys in client source — anyone can read them
-// from the bundled JS. Set VITE_OPENWEATHER_API_KEY in your .env file.
-const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
 const REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 const CITY = { name: "Bengaluru", lat: 12.9716, lon: 77.5946 };
 
@@ -55,11 +50,11 @@ function getRiskLabel(aqi) {
 }
 
 async function fetchLiveSnapshot() {
-  if (!apiKey) return { error: "missing_key" };
   try {
+    const backendUrl = getBackendUrl();
     const [wRes, pRes] = await Promise.all([
-      fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}&units=metric`),
-      fetch(`https://api.openweathermap.org/data/2.5/air_pollution?lat=${CITY.lat}&lon=${CITY.lon}&appid=${apiKey}`),
+      fetch(`${backendUrl}/api/weather/current?lat=${CITY.lat}&lon=${CITY.lon}`),
+      fetch(`${backendUrl}/api/weather/air-quality?lat=${CITY.lat}&lon=${CITY.lon}`),
     ]);
     if (!wRes.ok || !pRes.ok) throw new Error("Live data request failed");
     const w = await wRes.json();
@@ -141,13 +136,6 @@ const IconClock = ({ className = "w-4 h-4" }) => (
   </svg>
 );
 
-const IconAlertTriangle = ({ className = "w-4 h-4" }) => (
-  <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M10.3 3.9 1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" />
-    <path d="M12 9v4M12 17h.01" />
-  </svg>
-);
-
 /* ---------------------------------------------------------- */
 /* Section header                                               */
 /* ---------------------------------------------------------- */
@@ -205,15 +193,6 @@ function Dashboard() {
             {refreshing ? "Syncing live data..." : hasLiveData ? `Live · ${CITY.name} sensor mesh synced` : "Awaiting live data feed"}
           </p>
         </div>
-
-        {live?.error === "missing_key" && (
-          <div className="px-8 mt-4">
-            <div className="flex items-center gap-2 px-5 py-3 rounded-2xl bg-rose-500/10 border border-rose-500/30 text-rose-300 text-sm">
-              <IconAlertTriangle />
-              Missing VITE_OPENWEATHER_API_KEY — add it to a .env file at your project root.
-            </div>
-          </div>
-        )}
 
         {/* Earth Hero */}
         <div className="p-8 pt-4">

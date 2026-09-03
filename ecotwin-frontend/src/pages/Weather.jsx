@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import Sidebar from "../components/Sidebar";
 import Navbar from "../components/Navbar";
+import { getBackendUrl } from "../lib/backendUrl";
 
 /* ---------------------------------------------------------- */
 /* Inline icon set — matches Assistant.jsx / Simulator.jsx     */
@@ -121,19 +122,12 @@ function Weather() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
-
-    if (!apiKey) {
-      setError("Missing OpenWeather API key. Set VITE_OPENWEATHER_API_KEY in your .env file.");
-      setLoading(false);
-      return;
-    }
-
     const fetchWeather = async () => {
       try {
+        const backendUrl = getBackendUrl();
         const [currentRes, forecastRes] = await Promise.all([
-          fetch(`https://api.openweathermap.org/data/2.5/weather?q=Bengaluru&appid=${apiKey}&units=metric`),
-          fetch(`https://api.openweathermap.org/data/2.5/forecast?q=Bengaluru&appid=${apiKey}&units=metric`),
+          fetch(`${backendUrl}/api/weather/current?city=Bengaluru`),
+          fetch(`${backendUrl}/api/weather/forecast?city=Bengaluru`),
         ]);
 
         const currentData = await currentRes.json();

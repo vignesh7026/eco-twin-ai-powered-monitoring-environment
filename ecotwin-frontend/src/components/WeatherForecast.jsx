@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 /* ---------------------------------------------------------- */
 /* Config                                                       */
 /* ---------------------------------------------------------- */
-const API_KEY = "0b294ed82262f68270ccf92376bfbd87";
 const CITY    = { name: "Bengaluru", lat: 12.9716, lon: 77.5946 };
 const REFRESH = 10 * 60 * 1000; // 10 min
 
@@ -97,7 +97,7 @@ const LABELS = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Sat
 /* ---------------------------------------------------------- */
 async function fetchCurrent() {
   const res = await fetch(
-    `https://api.openweathermap.org/data/2.5/weather?lat=${CITY.lat}&lon=${CITY.lon}&appid=${API_KEY}&units=metric`
+    `${getBackendUrl()}/api/weather/current?lat=${CITY.lat}&lon=${CITY.lon}`
   );
   if (!res.ok) throw new Error("current fetch failed");
   return res.json();
@@ -105,7 +105,7 @@ async function fetchCurrent() {
 
 async function fetchForecast() {
   const res = await fetch(
-    `https://api.openweathermap.org/data/2.5/forecast?lat=${CITY.lat}&lon=${CITY.lon}&appid=${API_KEY}&units=metric&cnt=40`
+    `${getBackendUrl()}/api/weather/forecast?lat=${CITY.lat}&lon=${CITY.lon}&cnt=40`
   );
   if (!res.ok) throw new Error("forecast fetch failed");
   return res.json();

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from "react";
+import { getBackendUrl } from "../lib/backendUrl";
 
 // Bengaluru coordinates
 const LAT = 12.9716;
@@ -262,13 +263,13 @@ export default function RecentAlerts() {
     if (isManual) setRefreshing(true);
     setError(null);
     try {
-      const apiKey = import.meta.env.VITE_OPENWEATHER_API_KEY;
+      const backendUrl = getBackendUrl();
       const [currentRes, forecastRes] = await Promise.all([
         fetch(
-          `https://api.openweathermap.org/data/2.5/weather?lat=${LAT}&lon=${LON}&units=metric&appid=${apiKey}`
+          `${backendUrl}/api/weather/current?lat=${LAT}&lon=${LON}`
         ),
         fetch(
-          `https://api.openweathermap.org/data/2.5/forecast?lat=${LAT}&lon=${LON}&units=metric&appid=${apiKey}`
+          `${backendUrl}/api/weather/forecast?lat=${LAT}&lon=${LON}`
         ),
       ]);
 
