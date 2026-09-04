@@ -70,19 +70,43 @@ function transliterateIfNecessary(text, langPrimary) {
 /* ---------------------------------------------------------- */
 /* Voice selection with automatic fallback to transliteration */
 /* ---------------------------------------------------------- */
+const FEMALE_VOICE_HINTS = [
+  "female", "zira", "samantha", "susan", "victoria", "karen", "moira", "tessa",
+  "veena", "aditi", "raveena", "kalpana", "heera", "fiona", "salli", "joanna",
+  "kendra", "kimberly", "ivy", "google us english", "google uk english female",
+];
+const MALE_VOICE_HINTS = [
+  "male", "david", "mark", "george", "daniel", "james", "ravi", "fred", "alex",
+  "google uk english male",
+];
+
+function isFemaleVoice(voice) {
+  const name = (voice?.name || "").toLowerCase();
+  if (!name) return false;
+  if (FEMALE_VOICE_HINTS.some(hint => name.includes(hint))) return true;
+  if (MALE_VOICE_HINTS.some(hint => name.includes(hint))) return false;
+  return false;
+}
+
+function pickPreferredVoice(candidates) {
+  if (!candidates || candidates.length === 0) return undefined;
+  return candidates.find(isFemaleVoice) || candidates[0];
+}
+
 function getAudibleTextAndVoice(text, lang, voices) {
   const langPrimary = (lang || "en").split("-")[0].toLowerCase();
 
   if (voices && voices.length > 0) {
-    const exactVoice = voices.find(v => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(langPrimary));
+    const langMatches = voices.filter(v => v.lang && v.lang.toLowerCase().replace("_", "-").startsWith(langPrimary));
+    const exactVoice = pickPreferredVoice(langMatches);
 
     if (exactVoice) {
       return { text, voice: exactVoice, lang: exactVoice.lang };
     }
 
-    const enVoice = voices.find(v => v.lang && v.lang.toLowerCase().includes("en-in")) ||
-                    voices.find(v => v.lang && v.lang.toLowerCase().startsWith("en")) ||
-                    voices[0];
+    const enInMatches = voices.filter(v => v.lang && v.lang.toLowerCase().includes("en-in"));
+    const enMatches = voices.filter(v => v.lang && v.lang.toLowerCase().startsWith("en"));
+    const enVoice = pickPreferredVoice(enInMatches) || pickPreferredVoice(enMatches) || voices[0];
 
     const speakableText = transliterateIfNecessary(text, langPrimary);
     return { text: speakableText, voice: enVoice, lang: enVoice?.lang || "en-IN" };
